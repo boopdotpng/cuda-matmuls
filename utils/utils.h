@@ -2,14 +2,13 @@
 #include <vector>
 #include <string>
 #include <fstream> 
-#include <chrono>
 
 #define N 4096
 #define TILE 16
 #define TOL 1e-3
 
 struct buffers {
-  float *A, *B, *C; 
+  float *A, *B, *B_t, *C; 
   std::vector<float> staging_c; // cpu validation buffer
 };
 
@@ -19,11 +18,4 @@ bool cpu_val(buffers bufs);
 // get A and B as cuda pointers
 buffers allocs();
 
-// flops calculation and timing 
-struct Timer {
-  using Clock = std::chrono::high_resolution_clock;
-  Clock::time_point start;
-  std::chrono::duration<double> elapsed;
-  void begin();
-  double end();
-};
+float calc_gflops(double time);

@@ -2,11 +2,8 @@
 #include <cmath>
 #include <immintrin.h>
 
-void Timer::begin() { start = Clock::now(); }
-double Timer::end() {
-  auto stop = Clock::now();
-  elapsed = stop - start;
-  return (2.0 * 4096 * 4096 * 4096 / 1e9) / elapsed.count();
+float calc_gflops(double time) {
+  return (2.0 * N * N * N / 1e9) / (time/1000.0);
 }
 
 std::vector<float> read_binary(const std::string& path) {
@@ -100,10 +97,13 @@ buffers allocs() {
  cudaMalloc(&bufs.A, sz);
  cudaMalloc(&bufs.B, sz);
  cudaMalloc(&bufs.C, sz);
+ cudaMalloc(&bufs.B_t, sz);
  auto a = read_binary("./bins/A.bin");
  auto b = read_binary("./bins/B.bin");
+ auto b_t = read_binary("./bins/B_t.bin");
  bufs.staging_c = read_binary("./bins/C.bin");
  cudaMemcpy(bufs.A, a.data(), sz, cudaMemcpyHostToDevice);
  cudaMemcpy(bufs.B, b.data(), sz, cudaMemcpyHostToDevice);
+ cudaMemcpy(bufs.B_t, b_t.data(), sz, cudaMemcpyHostToDevice);
  return bufs;
 }

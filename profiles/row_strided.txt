@@ -1,29 +1,29 @@
-==PROF== Connected to process 22062 (/home/boop/ml/matmul-benches/naive)
-==PROF== Profiling "matmul" - 0: 0%....50%....100% - 9 passes
-launching with 256,256,1 numBlocks
-naive took 1990ms is correct | 69.06 gflops
-==PROF== Disconnected from process 22062
-[22062] naive@127.0.0.1
-  matmul(const float *, const float *, float *) (256, 256, 1)x(16, 16, 1), Context 1, Stream 7, Device 0, CC 12.0
+==PROF== Connected to process 105586 (/home/boop/ml/matmul-benches/outs/naive)
+==PROF== Profiling "matmul_B_row_strided" - 0: 0%....50%....100% - 9 passes
+launching with 256,256 block dim
+matmul b row strided: 43.48 gflops 
+==PROF== Disconnected from process 105586
+[105586] naive@127.0.0.1
+  matmul_B_row_strided(const float *, const float *, float *) (256, 256, 1)x(16, 16, 1), Context 1, Stream 7, Device 0, CC 12.0
     Section: GPU Speed Of Light Throughput
     ----------------------- ----------- ------------
     Metric Name             Metric Unit Metric Value
     ----------------------- ----------- ------------
-    DRAM Frequency                  Ghz        13.53
-    SM Frequency                    Ghz         2.25
-    Elapsed Cycles                cycle    130640558
-    Memory Throughput                 %        94.31
-    DRAM Throughput                   %        34.54
-    Duration                         ms        58.03
-    L1/TEX Cache Throughput           %        94.37
-    L2 Cache Throughput               %        28.92
-    SM Active Cycles              cycle 130075242.94
-    Compute (SM) Throughput           %        94.31
+    DRAM Frequency                  Ghz        13.79
+    SM Frequency                    Ghz         2.29
+    Elapsed Cycles                cycle    563330909
+    Memory Throughput                 %        98.06
+    DRAM Throughput                   %         7.48
+    Duration                         ms       245.47
+    L1/TEX Cache Throughput           %        98.14
+    L2 Cache Throughput               %         9.02
+    SM Active Cycles              cycle 562730798.09
+    Compute (SM) Throughput           %        21.80
     ----------------------- ----------- ------------
 
     INF   This workload is utilizing greater than 80.0% of the available compute or memory performance of the device.   
           To further improve performance, work will likely need to be shifted from the most utilized to another unit.   
-          Start by analyzing workloads in the Compute Workload Analysis section.                                        
+          Start by analyzing L1 in the Memory Workload Analysis section.                                                
 
     Section: Launch Statistics
     -------------------------------- --------------- ---------------
@@ -34,7 +34,7 @@ naive took 1990ms is correct | 69.06 gflops
     Cluster Size                                                   0
     Function Cache Configuration                     CachePreferNone
     Grid Size                                                  65536
-    Registers Per Thread             register/thread              40
+    Registers Per Thread             register/thread              38
     Shared Memory Configuration Size           Kbyte           16.38
     Driver Shared Memory Per Block       Kbyte/block            1.02
     Dynamic Shared Memory Per Block       byte/block               0
@@ -63,7 +63,7 @@ naive took 1990ms is correct | 69.06 gflops
     Block Limit Warps                     block            6
     Theoretical Active Warps per SM        warp           48
     Theoretical Occupancy                     %          100
-    Achieved Occupancy                        %        99.76
+    Achieved Occupancy                        %        99.74
     Achieved Active Warps Per SM           warp        47.88
     ------------------------------- ----------- ------------
 
@@ -71,15 +71,15 @@ naive took 1990ms is correct | 69.06 gflops
     -------------------------- ----------- ------------
     Metric Name                Metric Unit Metric Value
     -------------------------- ----------- ------------
-    Average DRAM Active Cycles       cycle    271149948
-    Total DRAM Elapsed Cycles        cycle   6280873984
-    Average L1 Active Cycles         cycle 130075242.94
-    Total L1 Elapsed Cycles          cycle   9111367360
-    Average L2 Active Cycles         cycle 116365134.67
-    Total L2 Elapsed Cycles          cycle   2800983840
-    Average SM Active Cycles         cycle 130075242.94
-    Total SM Elapsed Cycles          cycle   9111367360
-    Average SMSP Active Cycles       cycle 130086633.53
-    Total SMSP Elapsed Cycles        cycle  36445469440
+    Average DRAM Active Cycles       cycle    253246800
+    Total DRAM Elapsed Cycles        cycle  27076922368
+    Average L1 Active Cycles         cycle 562730798.09
+    Total L1 Elapsed Cycles          cycle  39424881670
+    Average L2 Active Cycles         cycle 504461615.42
+    Total L2 Elapsed Cycles          cycle  12103603128
+    Average SM Active Cycles         cycle 562730798.09
+    Total SM Elapsed Cycles          cycle  39424881670
+    Average SMSP Active Cycles       cycle 562657948.97
+    Total SMSP Elapsed Cycles        cycle 157699526680
     -------------------------- ----------- ------------
 
