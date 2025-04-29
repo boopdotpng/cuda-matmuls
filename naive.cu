@@ -2,8 +2,11 @@
 #include <vector> 
 #include "utils.h"
 
-/*
-this kernel accesses B the same way as row. 
+/* 
+The only way these two kernels differ is the way B is accessed. In the slow kernel (below), B is accessed like this: 
+(col * 4096 + i) * 4 bytes
+
+This means that all threads in a warp access memory that is ~16kb apart. GPUs are just 1024-bit SIMD machines. This breaks that notion entirely. Every lane issues its own transaction, leading to low memory utilization and very bad performance.
 */
 __global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
   uint row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -14,6 +17,13 @@ __global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
   c[row*N+col] = sum;
 }
 
+/* 
+In this kernel, we read from B like this: 
+i*4096 + col
+B has been transposed so we can read the columns as rows, just like A. 
+
+Which means that each load is only one float apart (32b). This is more cache friendly and the memory access is way more predictable, leading to much higher performance. See the ncu performance reports for more details. 
+*/
 __global__ void matmul_B_col_contiguous(const float *a, const float *b ,float *c) {
   uint row = blockIdx.y * blockDim.y + threadIdx.y;
   uint col = blockIdx.x * blockDim.x + threadIdx.x;
