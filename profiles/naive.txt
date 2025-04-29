@@ -1,0 +1,85 @@
+==PROF== Connected to process 22062 (/home/boop/ml/matmul-benches/naive)
+==PROF== Profiling "matmul" - 0: 0%....50%....100% - 9 passes
+launching with 256,256,1 numBlocks
+naive took 1990ms is correct | 69.06 gflops
+==PROF== Disconnected from process 22062
+[22062] naive@127.0.0.1
+  matmul(const float *, const float *, float *) (256, 256, 1)x(16, 16, 1), Context 1, Stream 7, Device 0, CC 12.0
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz        13.53
+    SM Frequency                    Ghz         2.25
+    Elapsed Cycles                cycle    130640558
+    Memory Throughput                 %        94.31
+    DRAM Throughput                   %        34.54
+    Duration                         ms        58.03
+    L1/TEX Cache Throughput           %        94.37
+    L2 Cache Throughput               %        28.92
+    SM Active Cycles              cycle 130075242.94
+    Compute (SM) Throughput           %        94.31
+    ----------------------- ----------- ------------
+
+    INF   This workload is utilizing greater than 80.0% of the available compute or memory performance of the device.   
+          To further improve performance, work will likely need to be shifted from the most utilized to another unit.   
+          Start by analyzing workloads in the Compute Workload Analysis section.                                        
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                   256
+    Cluster Scheduling Policy                           PolicySpread
+    Cluster Size                                                   0
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                  65536
+    Registers Per Thread             register/thread              40
+    Shared Memory Configuration Size           Kbyte           16.38
+    Driver Shared Memory Per Block       Kbyte/block            1.02
+    Dynamic Shared Memory Per Block       byte/block               0
+    Static Shared Memory Per Block        byte/block               0
+    # SMs                                         SM              70
+    Stack Size                                                  1024
+    Threads                                   thread        16777216
+    # TPCs                                                        35
+    Enabled TPC IDs                                              all
+    Uses Green Context                                             0
+    Waves Per SM                                              156.04
+    -------------------------------- --------------- ---------------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------------
+    Metric Name                     Metric Unit Metric Value
+    ------------------------------- ----------- ------------
+    Max Active Clusters                 cluster            0
+    Max Cluster Size                      block            8
+    Overall GPU Occupancy                     %            0
+    Cluster Occupancy                         %            0
+    Block Limit Barriers                  block           24
+    Block Limit SM                        block           24
+    Block Limit Registers                 block            6
+    Block Limit Shared Mem                block           16
+    Block Limit Warps                     block            6
+    Theoretical Active Warps per SM        warp           48
+    Theoretical Occupancy                     %          100
+    Achieved Occupancy                        %        99.76
+    Achieved Active Warps Per SM           warp        47.88
+    ------------------------------- ----------- ------------
+
+    Section: GPU and Memory Workload Distribution
+    -------------------------- ----------- ------------
+    Metric Name                Metric Unit Metric Value
+    -------------------------- ----------- ------------
+    Average DRAM Active Cycles       cycle    271149948
+    Total DRAM Elapsed Cycles        cycle   6280873984
+    Average L1 Active Cycles         cycle 130075242.94
+    Total L1 Elapsed Cycles          cycle   9111367360
+    Average L2 Active Cycles         cycle 116365134.67
+    Total L2 Elapsed Cycles          cycle   2800983840
+    Average SM Active Cycles         cycle 130075242.94
+    Total SM Elapsed Cycles          cycle   9111367360
+    Average SMSP Active Cycles       cycle 130086633.53
+    Total SMSP Elapsed Cycles        cycle  36445469440
+    -------------------------- ----------- ------------
+
