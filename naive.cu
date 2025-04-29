@@ -15,6 +15,7 @@ __global__ void matmul(const float *a, const float *b, float *c) {
 int main() {
   buffers bufs = allocs();
   Timer t;
+  Timer t2;
 
   dim3 threadsPerBlock(16, 16);
   dim3 numBlocks((N+15) / 16, (N+15)/16);
@@ -24,8 +25,13 @@ int main() {
   cudaDeviceSynchronize();
   double gflops = t.end();
 
+  t2.begin();
   bool valid = cpu_val(bufs);
-  if (valid) printf("naive: %.2f gflops \n", gflops);
+  t2.end();
+  if (valid) {
+    printf("naive: %.2f gflops \n", gflops);
+    printf("validation took %fs\n", t2.elapsed.count());
+  }
   else printf("wrong.\n"); 
   return 0;
 }

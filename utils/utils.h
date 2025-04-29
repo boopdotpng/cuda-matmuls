@@ -23,6 +23,7 @@ buffers allocs();
 struct Timer {
   using Clock = std::chrono::high_resolution_clock;
   Clock::time_point start;
+  std::chrono::duration<double> elapsed;
   void begin();
   double end();
 };

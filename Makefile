@@ -1,13 +1,14 @@
-NVCC = nvcc
-NVCCFLAGS = -I utils/ -Wno-deprecated-gpu-targets
+NVCC        = nvcc
+NVCCFLAGS   = -I utils/ -Wno-deprecated-gpu-targets -O3 -use_fast_math \
+              -Xcompiler "-O3 -mavx2 -mfma -march=native"
 
-UTILS = utils/utils.cu
-NAIVE_SRC = naive.cu
-TILED_SRC = tiled.cu
+UTILS       = utils/utils.cu
+NAIVE_SRC   = naive.cu
+TILED_SRC   = tiled.cu
 ULTRAFAST_SRC = ultrafast.cu
 
-NAIVE_BIN = outs/naive
-TILED_BIN = outs/tiled
+NAIVE_BIN   = outs/naive
+TILED_BIN   = outs/tiled
 ULTRAFAST_BIN = outs/ultrafast
 
 all: naive tiled ultrafast
