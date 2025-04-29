@@ -18,7 +18,7 @@ int main() {
 
   dim3 threadsPerBlock(16, 16);
   dim3 numBlocks((N+15) / 16, (N+15)/16);
-  printf("launching with %d,%d,%d numBlocks\n", numBlocks.x, numBlocks.y, numBlocks.z);
+  printf("launching with %d,%d block dim\n", numBlocks.x, numBlocks.y);
   t.begin();
   matmul<<<numBlocks, threadsPerBlock>>>(bufs.A, bufs.B, bufs.C);
   cudaDeviceSynchronize();

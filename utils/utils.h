@@ -7,9 +7,8 @@
 #define N 4096
 #define TILE 16
 #define TOL 1e-3
-#define FLOPS 2*N*N*N
 
-typedef struct buffers {
+struct buffers {
   float *A, *B, *C; 
   std::vector<float> staging_c; // cpu validation buffer
 };
@@ -21,7 +20,7 @@ bool cpu_val(buffers bufs);
 buffers allocs();
 
 // flops calculation and timing 
-typedef struct Timer {
+struct Timer {
   using Clock = std::chrono::high_resolution_clock;
   Clock::time_point start;
   void begin();
