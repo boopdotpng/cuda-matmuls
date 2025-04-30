@@ -35,7 +35,7 @@ int main(int argc, const char *argv[]) {
 
     for (int i = 0; i < RUNS; ++i) {
         cudaEventRecord(start);
-        tiled_matmul<<<numBlocks, threadsPerBlock>>>(bufs.A, bufs.B, bufs.C);
+        tiled_matmul<<<numBlocks, threadsPerBlock>>>(bufs.A, bufs.B_t, bufs.C);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&ms, start, stop);
