@@ -1,53 +1,57 @@
 #include <stdio.h>
-#include <vector> 
+#include <vector>
 #include "utils.h"
 
-__global__ void tiled_matmul(const float *__restrict__ a, const float *__restrict__ b ,float *__restrict__ c) {
-  // 2d dispatch: 256,256 blocks, 16x16 threads per block
-  uint row = blockIdx.y * TILE + threadIdx.y;
-  uint col = blockIdx.x * TILE + threadIdx.x;
-  __shared__ float Asub[TILE][TILE];
-  __shared__ float Bsub[TILE][TILE];
+__global__ void tiled_matmul(const float *__restrict__ a, const float *__restrict__ b, float *__restrict__ c) {
+    uint row = blockIdx.y * TILE + threadIdx.y;
+    uint col = blockIdx.x * TILE + threadIdx.x;
+    __shared__ float Asub[TILE][TILE];
+    __shared__ float Bsub[TILE][TILE];
 
-  float acc = 0.0f;
-  for (int k0 = 0; k0 < N; k0 += TILE) {
-    // load one tile each from A and B into shared memory 
-    Asub[threadIdx.y][threadIdx.x] = a[row * N + (k0 + threadIdx.x)];
-    Bsub[threadIdx.y][threadIdx.x] = b[(k0 + threadIdx.y) * N + col];
+    float acc = 0.0f;
+    for (int k0 = 0; k0 < N; k0 += TILE) {
+      Asub[threadIdx.y][threadIdx.x] = a[row * N + (k0 + threadIdx.x)];
+      Bsub[threadIdx.y][threadIdx.x] = b[(k0 + threadIdx.y) * N + col];
+      __syncthreads();
 
-    // sync threads in block 
-    __syncthreads();
+      #pragma unroll
+      for (int k = 0; k < TILE; ++k)
+        acc += Asub[threadIdx.y][k]   * Bsub[k][threadIdx.x];
+      
+      __syncthreads();
+    }
 
-    #pragma unroll
-    for (int k = 0; k < TILE; ++k)
-      acc += Asub[threadIdx.y][k] * Bsub[k][threadIdx.x];
-
-    __syncthreads();
-  }
-
-  c[row*N+col] = acc;
+    c[row * N + col] = acc;
 }
 
 int main(int argc, const char *argv[]) {
-  buffers bufs = allocs();
-  cudaEvent_t start, stop;
-  float gflops, ms;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
+    buffers bufs = allocs();
+    cudaEvent_t start, stop;
+    float ms, times[RUNS], sum = 0.0f, avg_gflops;
+    dim3 threadsPerBlock(TILE, TILE);
+    dim3 numBlocks(N / TILE, N / TILE);
 
-  dim3 threadsPerBlock(TILE, TILE);
-  // how many 16x16 blocks in a 4096x4096 matrix? 
-  dim3 numBlocks(N/TILE, N/TILE);
-  printf("launching with %d,%d block dim\n", numBlocks.x, numBlocks.y);
-  cudaEventRecord(start);
-  tiled_matmul<<<numBlocks, threadsPerBlock>>>(bufs.A, bufs.B, bufs.C);
-  cudaEventRecord(stop);
-  cudaEventSynchronize(stop);
-  cudaEventElapsedTime(&ms, start, stop); 
-  gflops = calc_gflops(ms); 
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
-  bool valid = cpu_val(bufs);
-  if (valid) printf("tiled matmul: %.2f gflops \n", gflops);
-  else printf("wrong.\n"); 
-  return 0;
+    for (int i = 0; i < RUNS; ++i) {
+        cudaEventRecord(start);
+        tiled_matmul<<<numBlocks, threadsPerBlock>>>(bufs.A, bufs.B, bufs.C);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&ms, start, stop);
+        times[i] = calc_gflops(ms);
+    }
+
+    for (int i = WARMUP; i < RUNS; ++i) {
+        sum += times[i];
+    }
+    avg_gflops = sum / (RUNS - WARMUP);
+
+    if (cpu_val(bufs))
+        printf("tiled matmul avg (%d runs): %.2f gflops\n", RUNS-WARMUP, avg_gflops);
+    else
+        printf("wrong.\n");
+
+    return 0;
 }

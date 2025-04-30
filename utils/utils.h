@@ -6,6 +6,8 @@
 #define N 4096
 #define TILE 16
 #define TOL 1e-3
+#define RUNS 8
+#define WARMUP 2
 
 struct buffers {
   float *A, *B, *B_t, *C; 
