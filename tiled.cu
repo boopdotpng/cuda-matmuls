@@ -2,7 +2,7 @@
 #include <vector> 
 #include "utils.h"
 
-__global__ void tiled_matmul(const float *a, const float *b ,float *c) {
+__global__ void tiled_matmul(const float *__restrict__ a, const float *__restrict__ b ,float *__restrict__ c) {
   // 2d dispatch: 256,256 blocks, 16x16 threads per block
   uint row = blockIdx.y * TILE + threadIdx.y;
   uint col = blockIdx.x * TILE + threadIdx.x;

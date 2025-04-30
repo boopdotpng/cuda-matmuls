@@ -1,5 +1,7 @@
+# 5070ti 
+ARCH        = -gencode=arch=compute_120,code=sm_120
 NVCC        = nvcc
-NVCCFLAGS   = -I utils/ -Wno-deprecated-gpu-targets -O3 -use_fast_math \
+NVCCFLAGS   = $(ARCH) -I utils/ -Wno-deprecated-gpu-targets -O3 -use_fast_math \
               -Xcompiler "-O3 -mavx2 -mfma -march=native"
 
 UTILS       = utils/utils.cu
