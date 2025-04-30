@@ -2,7 +2,7 @@
 #include <vector>
 #include "utils.h"
 
-__global__ void tiled_matmul(const float *__restrict__ a, const float *__restrict__ b, float *__restrict__ c) {
+__global__ void tiled_matmul(const float *a, const float *b, float *c) {
     uint row = blockIdx.y * TILE + threadIdx.y;
     uint col = blockIdx.x * TILE + threadIdx.x;
     __shared__ float Asub[TILE][TILE];
@@ -14,7 +14,6 @@ __global__ void tiled_matmul(const float *__restrict__ a, const float *__restric
       Bsub[threadIdx.y][threadIdx.x] = b[(k0 + threadIdx.y) * N + col];
       __syncthreads();
 
-      #pragma unroll
       for (int k = 0; k < TILE; ++k)
         acc += Asub[threadIdx.y][k]   * Bsub[k][threadIdx.x];
       
