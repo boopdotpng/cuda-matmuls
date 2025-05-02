@@ -15,7 +15,6 @@ __global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
 __global__ void matmul_B_col_contiguous(const float *a, const float *b, float *c) {
     uint row = blockIdx.y * blockDim.y + threadIdx.y;
     uint col = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= N || col >= N) return;
     float sum = 0.0f;
     for (uint i = 0; i < N; ++i)
         sum += a[row * N + i] * b[i * N + col];
