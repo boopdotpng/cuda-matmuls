@@ -16,7 +16,7 @@ ULTRAFAST_BIN = outs/ultrafast
 CPU_BIN     = outs/cpu_matmul
 
 GCC         = g++
-GCCFLAGS    = -march=native -fopenmp -O2
+GCCFLAGS    = -march=native -O2
 
 all: naive tiled ultrafast cpu
 
