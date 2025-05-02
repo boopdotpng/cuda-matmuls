@@ -1,38 +1,41 @@
 #include <stdio.h>
 
 __global__ void record_thread_coords(int* coords, int width) {
-  int gidx = blockIdx.x * blockDim.x + threadIdx.x; // 0 to 3 (row)
-  int gidy = blockIdx.y * blockDim.y + threadIdx.y; // 0 to 3 (col)
+  int col = blockIdx.x * blockDim.x + threadIdx.x; // 0 to width (x)
+  int row = blockIdx.y * blockDim.y + threadIdx.y; // 0 to height (y)
 
   // 16 total threads
-  int idx = gidy * width + gidx; // global thread position
+  int idx = row * width + col; // global thread position
 
-  // 2* because we launch 16 threads to cover 32 elements.
   // each thread writes two values in the array
-  // the last two elements would be 2*15+0=30 and 2*15+1=31
-  coords[2 * idx + 0] = gidx;
-  coords[2 * idx + 1] = gidy;
+  // the last two threads would write indices 2*23+0=46 and 2*23+1=47
+  coords[2 * idx + 0] = col; // x
+  coords[2 * idx + 1] = row; // y
 }
 
 int main() {
-  int width = 4, height = 4;
-  int* d_coords; // shape: (2,4*4) flattened
-  // a 4 by 4 grid where each item is a 2d coordinate
-  cudaMalloc(&d_coords, sizeof(int) * 2 * width * height);
-  // launch with 4 threads per block (2,2) and 4 total blocks (2,2)
-  record_thread_coords<<<dim3(2,2), dim3(2,2)>>>(d_coords, width);
+  int width = 4, height = 6;
 
-  // output array
+  int* d_coords;
+  cudaMalloc(&d_coords, sizeof(int) * 2 * width * height);
+
+  dim3 block_dim(2, 2); // 2x2 threads per block
+  dim3 grid_dim((width + block_dim.x - 1) / block_dim.x,
+                (height + block_dim.y - 1) / block_dim.y);
+
+  record_thread_coords<<<grid_dim, block_dim>>>(d_coords, width);
+
   int h_coords[2 * width * height];
   cudaMemcpy(h_coords, d_coords, sizeof(h_coords), cudaMemcpyDeviceToHost);
 
-  for (int x = 0; x < width; x++) {
-    for (int y = 0; y < height; y++) {
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
       int idx = y * width + x;
-      printf("(%d,%d) ", h_coords[2*idx+0], h_coords[2*idx+1]);
+      printf("(%d,%d) ", h_coords[2 * idx + 0], h_coords[2 * idx + 1]);
     }
     printf("\n");
   }
 
+  cudaFree(d_coords);
   return 0;
 }
