@@ -1,16 +1,17 @@
 #include <stdio.h>
 
 __global__ void record_thread_coords(int* coords, int width) {
-    int gidx = blockIdx.x * blockDim.x + threadIdx.x; // 0 to 3
-    int gidy = blockIdx.y * blockDim.y + threadIdx.y; // 0 to 3
-    // 16 total threads
-    int idx = gidy * width + gidx; // global thread position
+  int gidx = blockIdx.x * blockDim.x + threadIdx.x; // 0 to 3 (row)
+  int gidy = blockIdx.y * blockDim.y + threadIdx.y; // 0 to 3 (col)
 
-    // 2* because we launch 16 threads to cover 32 elements. 
-    // the last element would be 2 * 15 + 1 = 31
-    // each thread writes two values in the array
-    coords[2 * idx + 0] = gidx;
-    coords[2 * idx + 1] = gidy;
+  // 16 total threads
+  int idx = gidy * width + gidx; // global thread position
+
+  // 2* because we launch 16 threads to cover 32 elements.
+  // each thread writes two values in the array
+  // the last two elements would be 2*15+0=30 and 2*15+1=31
+  coords[2 * idx + 0] = gidx;
+  coords[2 * idx + 1] = gidy;
 }
 
 int main() {
