@@ -1,26 +1,26 @@
-This post is an in depth overview on GPU architecture and how to write fast GPU code. Even though all the examples and profiling in this post are done on an Nvidia card (5070 ti), the concepts are applicable to any kind of GPU-like device (find a better way to say this). 
+This post is an in depth overview on GPU architecture and how to write performant GPU code. 
 
-This was inspired by some George Hotz videos I watched (see [how do GPUs work?](https://youtu.be/OUzm06YaUsI) and [can you multiply a matrix?](https://youtu.be/VgSQ1GOC86s)). I wanted to take some of the information in those videos and put them in text form, which is sometimes easier to understand and come back to later. I also wanted to gain an understanding of how Tinygrad works, and understanding the GPU programming paradigm is probably the most important part. Everything else comes afterwards.
-## GPU Architecture overview
-For a really good overview on GPU architecture (especially for Nvidia) see [modal.com]([What is a Warp Scheduler? | GPU Glossary](https://modal.com/gpu-glossary/device-hardware/warp-scheduler)). A brief summary: 
+
+In order to be successful at writing fast GPU code, you need to how the hardware executes your instructions and what its limitations are. Unlike a CPU, a GPU is massively parallel and so it requires a completely different mental model, which we will build in the following sections.
+## How is a program executed on a GPU? 
+This is a how compute in a GPU is laid out, roughly. The most important block in a GPU is the SM (Streaming Multiprocessor) and everything inside it.  
 ```
 gpu 
 ├── gpc (graphics processing clusters)
 │   └── tpc (texture processing cluster, just groups SMs)
-│       └── sm (70)
-│           ├── cuda cores (128) 
-│           ├── tensor cores (special matmul cores) (4)
+│       └── sm (70 total)
+│           ├── cuda cores (128 per SM) 
+│           ├── tensor cores (special matmul cores) (4 per SM)
 │           ├── special function units (sin, exp, etc)
-│           ├── warp schedulers
+│           ├── warp schedulers (typically 4)
 │           ├── register file (64 - 256 KB)
 │           ├── load/store units
 │           └── shared memory / l1 cache (64-164kb depending on gpu)
 ├── l2 cache (shared) (70MB on 4090)
-├── global memory (dram) 
-└── pci-e
+|── global memory (dram) (8 - 192GB)
 ```
 
-The numbers will differ for your GPU and all the words change if you're on AMD (SM = Compute Unit), but the overall concepts are the same. 
+
 
 Cuda cores are very simple ALUs capable of doing one float/int instruction per clock per thread. A thread is the smallest unit of execution. These are grouped into warps of 32; all threads in a warp are scheduled on cuda cores and execute the same instruction at the same time (SIMT). For example, 2048 threads might run on 128 cores over thousands of cycles. Each SM can handle multiple warps concurrently, depending on how resource heavy the program is (on memory, especially). The warp scheduler in the GPU is responsible for handling this. If one warp stalls (while waiting for memory, for example), another warp is swapped in. 
 ### A basic GPU kernel launch 
@@ -40,14 +40,13 @@ It's important to realize that warps, not blocks, are the unit of scheduling. A 
  Consider the following kernel that adds two arrays `A+B` and stores the output in another array `C`. We'll assume that `len(a) = len(b) = len(c) = 1000`.
  
 ```cpp
-__global__ void add(const float *a, const float *b, float *c, int N) {
+__global__ void add(const float *a, const float *b, float *c) {
 	int gid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (gid > N) return; // see overlaunching section	
 	c[gid] = a[gid] + b[gid];
 }
 ```
 
-The `id` calculation here is done based on a few parameters that are implicitly passed into each kernel. They tell the thread where it is in the larger dispatch grid. This is how we each thread knows which index of `c` it's updating.
+The `gid` calculation here is done based on a few parameters that are implicitly passed into every kernel. They tell the thread where it is in the grid relative to other threads. This is how we each thread knows which index of `c` it's updating.
 
 ```
 grid (1d)
@@ -65,12 +64,14 @@ grid (1d)
 ├── block 2 
 │   ├── thread 0 -- gid = 6
 │   ├── thread 1 -- gid = 7
-│   ├── thread 2 -- gid = 8 (9 threads total)
+│   ├── thread 2 -- gid = 8 
 
-Dispatching 3 blocks with 3 threads each. 
+Dispatching 3 blocks with 3 threads each. (9 threads total)
 ```
 
-The idea for this kernel is to launch one thread per element that needs to be updated (1000 threads in this case). So the first thread will do `c[0] = a[0] + b[0]`, the second will do `c[1] = a[1] + b[1]`, and so on. One small caveat is that it's suboptimal to launch a non-power-of-two number of threads per block. This is due to the GPU architecture we discussed above: 
+In this kernel, the first thread will calculate `c[0] = a[0] + b[0]`, the second will calculate `c[1] = a[1] + b[1]`, and so on. 
+
+One small caveat is that it's suboptimal to launch a non-power-of-two number of threads per block. This is due to the GPU architecture we discussed above: 
 - You want warp aligned compute (threads are run in batches of 32)
 - Memory access is a aligned and predictable (this is important for cache) 
  
@@ -297,6 +298,17 @@ The key differences to note here are:
 ## Tiled matmul 
 The next step is to reduce our global memory loads even further. We can do this by using shared memory (on L1 cache, local to each block). Instead of reading from global memory each time, we can copy a tile of the matrix (usually 16x16) into shared memory, and then calculate the dot products. This increases 
 
-## Psychotic optimizations 
+## Optimizations & how can we reach peak performance? 
 
+
+
+# Resources 
+
+This was partially inspired by some George Hotz streams I watched:
+- [how do GPUs work?](https://youtu.be/OUzm06YaUsI) 
+- [can you multiply a matrix?](https://youtu.be/VgSQ1GOC86s)). 
+
+All the code in this post can be found on [GitHub](https://github.com/boopdotpng/cuda-matmuls).
+
+For another perspective on CUDA and GPU architecture, see the guide at [modal.com](https://modal.com/gpu-glossary). 
 
