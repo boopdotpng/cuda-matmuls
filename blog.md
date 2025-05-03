@@ -201,7 +201,10 @@ OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1
 ```
 This gets around 300 gflops on my Ryzen 7 9700x. For multi-threaded performance, just remove the environment variables (1,400 gflops).
 ## The simplest GPU matrix multiplication 
-We'll launch one thread per element in C (16,777,216 threads). We'll use 256 threads per block, which makes our total block count `total_threads / 256 = 65,536`. Since this is a 2d problem, `blockDim = (16,16)` and  `gridDim = (256,256)`. 
+This code is a copy of the CPU matrix multiplication code, with the outer loops taken out. With one thread per element in the output matrix C (4096 * 4096 = 16,777,216) and 256 threads per block, we require `total_threads / 256 = 65,536` blocks. 
+The launch configuration is two dimensional: 
+`blockDim = (16,16)`  -> 256 threads per block,
+`gridDim = (256,256)`  -> 65,536 total blocks.
 ```cpp
 __global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
     uint row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -213,12 +216,86 @@ __global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
 }
 ```
 
+This gets around 680 gflops on a 5070 ti. However, there is a massive problem with the way global memory is accessed in this kernel. 
+### Profiling kernels
+`ncu` is a really good way to profile kernels and understand how well the kernel is utilizing the GPU. You can see SM throughput, number of cycles, DRAM bandwidth, and a lot of other important statistics. Profiling this kernel using `ncu` (most values are excluded for brevity; a full comparison table will come later): 
 
+| Metric                     | Value (matmul_B_row_strided) | Unit   | Insight                             |
+| -------------------------- | ---------------------------- | ------ | ----------------------------------- |
+| Compute (SM) Throughput    | 21.79                        | %      | very low compute utilization        |
+| Memory Throughput          | 98.06                        | %      | memory system saturated             |
+| DRAM Throughput            | 7.52                         | %      | poor global memory efficiency       |
+| Achieved Occupancy         | 99.74                        | %      | full warp scheduling                |
+| Achieved Active Warps/SM   | 47.87                        | warp   | maxed out warp allocation           |
+| Elapsed Cycles             | 5.63281e+08                  | cycles | long execution time                 |
+| Average SM Active Cycles   | 5.62532e+08                  | cycles | SMs active throughout               |
+| Average L1 Active Cycles   | 5.62532e+08                  | cycles | L1 busy entire time                 |
+| Average L2 Active Cycles   | 5.04343e+08                  | cycles | high latency propagation            |
+| Average DRAM Active Cycles | 2.54577e+08                  | cycles | global memory is a major bottleneck |
+By looking at the elapsed cycles, you can tell that the SMs were active nearly the entire time, but throughput was only 22%. Also, the memory system (L1, L2, DRAM) was running for an alarmingly high percentage of the total cycles. We're doing almost no work in this kernel (22% SM throughput), but the cycle count is very high. This leads us to the conclusion that this kernel is memory bound.
 ## Naive matmul (coalesced) 
+The root cause of the memory issues in the previous kernel is this line: 
+```cpp
+sum += a[row * 4096 + i] * b[col * 4096 + i];
+```
 
+The way we access A is row-major. This is inherently good for memory coalescing, since you're reading strictly left to right. All the values are next to each other. 
 
+B, on the other hand access columns in a row-major array, which is very bad for coalescing.  
+```
+thread 0 → b[0 * 4096 + i] → b[i]
+thread 1 → b[1 * 4096 + i] → b[4096 + i]
+thread 2 → b[2 * 4096 + i] → b[8192 + i]
+...
+```
+Each thread accesses a float 4096 elements away from the adjacent thread. 
+
+The fix is simple. If you transpose B, the rows and columns are switched. Then, we can access the columns of B the same way we access the rows of A. Now, both A and B are accessed row-wise. 
+```cpp
+ sum += a[row * 4096 + i] * b[i * 4096 + col];
+```
+
+Below is the table for the coalesced memory accesses for the new kernel starting at the very first thread.
+
+| threadIdx.x | col | Access `A[0][0]` (same for all) | Access `B[0][col]` | Address in B |
+| ----------- | --- | ------------------------------- | ------------------ | ------------ |
+| 0           | 0   | `a[0 * 4096 + 0]` = `a[0]`      | `b[0 * 4096 + 0]`  | `b[0]`       |
+| 1           | 1   | `a[0]`                          | `b[0 * 4096 + 1]`  | `b[1]`       |
+| 2           | 2   | `a[0]`                          | `b[0 * 4096 + 2]`  | `b[2]`       |
+| ...         | ... | `a[0]`                          | ...                | ...          |
+| 15          | 15  | `a[0]`                          | `b[0 * 4096 + 15]` | `b[15]`      |
+
+With this change, the kernel achieves around 2700 gflops. 
+#### NCU comparison table
+Here is a table comparing profiling results from the two kernels. The first column is the new kernel where we fixed the way B is accessed, and the second column is the old uncoalesced kernel that we profiled earlier.
+
+| Metric                     | Average (matmul_B_col_contiguous) | Average (matmul_B_row_strided) | Unit  |
+| -------------------------- | --------------------------------- | ------------------------------ | ----- |
+| Average DRAM Active Cycles | 2.68328e+08                       | 2.54577e+08                    | cycle |
+| Average L1 Active Cycles   | 1.32893e+08                       | 5.62532e+08                    | cycle |
+| Average L2 Active Cycles   | 1.18857e+08                       | 5.04343e+08                    | cycle |
+| Average SM Active Cycles   | 1.32893e+08                       | 5.62532e+08                    | cycle |
+| Compute (SM) Throughput    | 92.33                             | 21.79                          | %     |
+| DRAM Throughput            | 33.58                             | 7.52                           | %     |
+| Duration                   | 57.95                             | 245.92                         | ms    |
+| Elapsed Cycles             | 1.32984e+08                       | 5.63281e+08                    | cycle |
+| L1/TEX Cache Throughput    | 92.37                             | 98.17                          | %     |
+| L2 Cache Throughput        | 28.38                             | 9.01                           | %     |
+| Memory Throughput          | 92.33                             | 98.06                          | %     |
+| SM Active Cycles           | 1.32893e+08                       | 5.62532e+08                    | cycle |
+| Total DRAM Elapsed Cycles  | 6.39275e+09                       | 2.70747e+10                    | cycle |
+| Total L1 Elapsed Cycles    | 9.30642e+09                       | 3.94249e+10                    | cycle |
+| Total L2 Elapsed Cycles    | 2.85843e+09                       | 1.21065e+10                    | cycle |
+| Total SM Elapsed Cycles    | 9.30642e+09                       | 3.94249e+10                    | cycle |
+| Total SMSP Elapsed Cycles  | 3.72257e+10                       | 1.577e+11                      | cycle |
+| Waves Per                  | 156.04                            | 156.04                         | SM    |
+The key differences to note here are: 
+- SM throughout has gone up to 92%. This means we're actually doing ALU operations for most of the execution time instead of waiting for memory access. 
+- Memory system cycles have gone down almost 5x
+- L2 cache throughput has gone up. Because we made our memory access more linear and predictable, the GPU is able to utilize the cache more. 
+- This kernel is nearly 4x faster than our previous one because of the above factors. 
 ## Tiled matmul 
-
+The next step is to reduce our global memory loads even further. We can do this by using shared memory (on L1 cache, local to each block). Instead of reading from global memory each time, we can copy a tile of the matrix (usually 16x16) into shared memory, and then calculate the dot products. This increases 
 
 ## Psychotic optimizations 
 
