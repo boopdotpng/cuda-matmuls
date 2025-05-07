@@ -1,29 +1,83 @@
 This post is an in depth overview on GPU architecture and how to write performant GPU code. 
 
-
-In order to be successful at writing fast GPU code, you need to how the hardware executes your instructions and what its limitations are. Unlike a CPU, a GPU is massively parallel and so it requires a completely different mental model, which we will build in the following sections.
-## How is a program executed on a GPU? 
-This is a how compute in a GPU is laid out, roughly. The most important block in a GPU is the SM (Streaming Multiprocessor) and everything inside it.  
+To write fast GPU code, you need to know how your instructions are scheduled and executed, and how memory is accessed in each kernel. Unlike a CPU, a GPU is massively parallel and requires a completely different mental model, which we will build in the following sections.
+## Compute layout & memory
+The fundamental hardware unit in a GPU is the SM (Streaming Multiprocessor). Here is where a SM sits inside a GPU. 
 ```
-gpu 
-├── gpc (graphics processing clusters)
-│   └── tpc (texture processing cluster, just groups SMs)
-│       └── sm (70 total)
-│           ├── cuda cores (128 per SM) 
-│           ├── tensor cores (special matmul cores) (4 per SM)
-│           ├── special function units (sin, exp, etc)
-│           ├── warp schedulers (typically 4)
-│           ├── register file (64 - 256 KB)
-│           ├── load/store units
-│           └── shared memory / l1 cache (64-164kb depending on gpu)
-├── l2 cache (shared) (70MB on 4090)
-|── global memory (dram) (8 - 192GB)
+GPU  
+├── GPC (graphics processing cluster)
+│   └── TPC (texture processing cluster)
+│       └── SM (streaming multiprocessor) — 70 total on RTX 5070 Ti
+│           ├── 128 CUDA cores (scalar FP32/INT32 ALUs)
+│           ├── 4 Tensor cores (matrix-multiply units)
+│           ├── Special Function Units (exp, sin, etc.)
+│           ├── Warp schedulers (typically 4 per SM)
+│           ├── Register file (64–256 KB per SM)
+│           ├── Load/Store units
+│           └── Shared memory / L1 cache (64–164 KB)
+├── L2 cache (shared across all SMs, 70 MB on 4090)
+└── Global memory (DRAM, 8–192 GB depending on model)
 ```
 
+### Types of memory on a GPU
+Before we go through the execution model, it's important to understand where each layer of memory is on a GPU and the cost of accessing each layer. The execution model relies heavily on the memory layout. 
+
+Memory access is the dominant bottleneck in most kernels, and performance depends not just on what you compute, but where your data lives and how it's accessed. Let’s examine the memory system in detail.
+
+| Memory type          | Latency (cycles) | Bandwidth  | notes                        |
+| -------------------- | ---------------- | ---------- | ---------------------------- |
+| Global (GDDR or HBM) | 400-800          | 0.8-1 TB/s | high latency, off chip dram  |
+| L2 cache             | 100-200          | 1-2 TB/s   | shared between SMs           |
+| L1 cache/shared      | 20-40            | 1-2 TB/s   | per-sm, fast for threads     |
+| Register file        | 1-4              | >10 TB/s   | per-core, extremely fast<br> |
+#### Global memory 
+Global memory is accessible to all SMs and represents the largest but slowest memory region on the GPU, typically implemented as off-chip GDDR6 or GDDR7 DRAM. It serves as the main interface between CPU and GPU, storing model weights, input datasets, and output buffers.
+
+When you call `cudaMalloc`, the pointer returned points to a region in this memory.
+#### L2 cache
+L2 cache is a unified cache shared by all SMs that sits between global memory and cores. It caches reads from global memory to reduce latency and memory traffic. All global reads and writes pass through it, though reads benefit way more. 
+#### L1 cache / shared memory 
+L1 cache is fast, low latency cache local to each SM and typically shares physical space with shared memory. Shared memory is explicitly allocated in a kernel using the `__shared__` keyword inside a kernel and is accessible only to threads within the same block. Because of its speed and block level scope, it's often used to stage data from global memory, reducing costly global reads. This is a critical tool for optimizing memory-bound kernels.
+#### Register file
+These closely resemble registers on a CPU, except there are many times more per core in a GPU. Total capacity per SM is around 128 KB (architecture-dependent), which is divided across all active threads. Each thread gets its own private set of registers, and the number used per thread directly affects how many threads can run concurrently on an SM. There are different kinds of registers (general-purpose, predicate, special), but these distinctions only become relevant when examining PTX (NVIDIA’s intermediate representation) or SASS (its assembly-level counterpart).
+
+You can view register usage by compiling with `nvcc --ptxas-options=-v kernel.cu`. This prints how many registers each thread in your kernel uses. The main constraint is that you cannot overuse registers: if your kernel allocates too many per thread, fewer threads can be scheduled on each SM, reducing occupancy. This limits the GPU's ability to hide latency by switching between warps. If usage exceeds hardware limits, the compiler will spill values into local memory, which is actually backed by slow global memory.
+
+#### Memory coalescing 
+Think of every memory access as an independent transaction. In a warp (group of 32 threads), coalescing allows the GPU to combine many smaller memory accesses into one large one. For example, let's say you had 32 floats stored in global memory. You launch 32 threads (one warp) that each read one float and perform an operation on it. Because all 32 floats in memory are stored side by side, the GPU can compress your 32 individual read instructions into one giant 1024-bit read. This reduces the number of read requests, reduces latency, and greatly speeds up your kernel. 
+
+On the other hand, let's now hypothetically say that your 32 floats are located far apart in memory. Thread 0 reads `A[0]`, thread 1 reads `A[1000]`, etc. Now, the GPU can't merge your memory transactions. It has to issue 32 separate memory transactions and wait for the data to be available to each warp. The memory bus is now underutilized, and so is your SM, because it's spending most of the clock cycles waiting for memory accesses. Since each global memory read takes 400-800 cycles, this adds a significant amount of execution time. L1 and L2 cache partially mitigate this issue, but they only absorb repeated access to the same data. When access patterns are irregular and non-repeating, cache can't help, and memory coalescing becomes the dominant performance factor. 
+
+### Execution model 
+
+CUDA cores are simple ALUs that execute FP32 or INT32 operations,  one instruction per data element. Under ideal conditions (when instructions are ready and memory access isn't stalled), a core can perform one floating point operation per clock cycle. This is the basis for theoretical GPU throughput: multiplying the number of cores by the GPU's clock speed gives the peak number of instructions per second.
+
+For a RTX 5070ti: 
+- SMs: 70
+- Cuda cores per SM: 128
+- Total CUDA cores: 8,960
+- Boost clock: 2.45 Ghz
+- Peak FP32 throughput: 8,960 × 2.45 × 10⁹ × 2 = 43.9 TFLOPS (trillion floating point operations per second)
+
+**Why are we multiplying by 2?**
+Modern GPUs implement FP32 arithmetic using FMA (fused multiply-add) units, which perform a multiplication and addition per clock cycle. Since this counts as two operations, the effective throughput per core per clock cycle is doubled. 
+
+## How is a kernel executed on a GPU? 
+
+Real world performance, however, is usually much slower than this theoretical maximum. To figure out why, we have to go through the execution model: 
+
+A thread is the smallest unit of execution. Every thread runs your kernel function, and all operations are scheduled on CUDA cores. 
+
+A warp is a group 32 threads (all in the same block) that are executed at the same time. 
+
+A block is a group of threads. Nvidia imposes a hard limit on the maximum amount of threads you can have in a block (almost always 1024). 
+
+A grid is a grouping of blocks.
 
 
-Cuda cores are very simple ALUs capable of doing one float/int instruction per clock per thread. A thread is the smallest unit of execution. These are grouped into warps of 32; all threads in a warp are scheduled on cuda cores and execute the same instruction at the same time (SIMT). For example, 2048 threads might run on 128 cores over thousands of cycles. Each SM can handle multiple warps concurrently, depending on how resource heavy the program is (on memory, especially). The warp scheduler in the GPU is responsible for handling this. If one warp stalls (while waiting for memory, for example), another warp is swapped in. 
-### A basic GPU kernel launch 
+
+
+## A basic GPU kernel launch 
 A kernel launch consists of the following: 
 1. A GPU kernel function
 2. Number of blocks 
@@ -151,30 +205,7 @@ The printed coordinates are in `(col, row)` format, where `col` corresponds to t
 
 You can see this example at [cuda-matmuls/misc/2d_dispatch_viz.cu](https://github.com/boopdotpng/cuda-matmuls/blob/master/misc/2d_dispatch_viz.cu).
 ### GPU Memory  
-In GPU compute workloads, memory access is often the limiting factor for performance, not raw arithmetic throughput.
 
-| Memory type     | Latency (cycles) | Bandwidth  | notes                        |
-| --------------- | ---------------- | ---------- | ---------------------------- |
-| GDDR7 (global)  | 400-800          | 0.8-1 TB/s | high latency, off chip dram  |
-| L2 cache        | 100-200          | 1-2 TB/s   | shared between SMs           |
-| L1 cache/shared | 20-40            | 1-2 TB/s   | per-sm, fast for threads     |
-| Register file   | 1-4              | >10 TB/s   | per-core, extremely fast<br> |
-#### Memory coalescing 
-Think of every memory access as an independent transaction. In a warp (group of 32 threads), coalescing allows the GPU to combine many smaller memory accesses into one large one. For example, let's say you had 32 floats stored in global memory. You launch 32 threads (one warp) that each read one float and perform an operation on it. Because all 32 floats in memory are stored side by side, the GPU can compress your 32 individual read instructions into one giant 1024-bit read. This reduces the number of read requests, reduces latency, and greatly speeds up your kernel. 
-
-On the other hand, let's now hypothetically say that your 32 floats are located far apart in memory. Thread 0 reads `A[0]`, thread 1 reads `A[1000]`, etc. Now, the GPU can't merge your memory transactions. It has to issue 32 separate memory transactions and wait for the data to be available to each warp. The memory bus is now underutilized, and so is your SM, because it's spending most of the clock cycles waiting for memory accesses. Since each global memory read takes 400-800 cycles, this adds a significant amount of execution time. L1 and L2 cache partially mitigate this issue, but they only absorb repeated access to the same data. When access patterns are irregular and non-repeating, cache can't help, and memory coalescing becomes the dominant performance factor. 
-#### Global memory 
-Global memory is accessible to all threads across all SMs and represents the largest but slowest memory region on the GPU, typically implemented as off-chip GDDR6 or GDDR7 DRAM. It serves as the main interface between CPU and GPU, storing model weights, input datasets, and output buffers. When you call `cudaMalloc`, the pointer returned refers to a region in this memory.
-
-Since all data must ultimately originate from and return to global memory, efficient use is critical. Performance is highly sensitive to memory access patterns, especially within warps.
-#### L2 cache
-L2 cache is a unified cache shared by all SMs that sits between global memory and cores. It caches reads from global memory to reduce latency and memory traffic. All global reads and writes pass through it, though reads benefit way more. 
-#### L1 cache / shared memory 
-L1 cache is fast, low latency cache local to each SM and typically shares physical space with shared memory. Shared memory is explicitly allocated in a kernel using the `__shared__` keyword inside a kernel and is accessible only to threads within the same block. Because of its speed and block level scope, it's often used to stage data from global memory, reducing costly global reads. This is a critical tool for optimizing memory-bound kernels.
-#### Register file
-These closely resemble registers on a CPU, except there are many times more per core in a GPU. Total capacity per SM is around 128 KB (architecture-dependent), which is divided across all active threads. Each thread gets its own private set of registers, and the number used per thread directly affects how many threads can run concurrently on an SM. There are different kinds of registers (general-purpose, predicate, special), but these distinctions only become relevant when examining PTX (NVIDIA’s intermediate representation) or SASS (its assembly-level counterpart).
-
-You can view register usage by compiling with `nvcc --ptxas-options=-v kernel.cu`. This prints how many registers each thread in your kernel uses. The main constraint is that you cannot overuse registers: if your kernel allocates too many per thread, fewer threads can be scheduled on each SM, reducing occupancy. This limits the GPU's ability to hide latency by switching between warps. If usage exceeds hardware limits, the compiler will spill values into local memory, which is actually backed by slow global memory.
 ## Matrix multiplication on CPU
 Matrix multiplication is one of the most common dense compute kernels in machine learning. This section covers a series of increasingly optimized method for square matrices. There's a George Hotz clip involving matrices, cubes, and some vague hand movements out there somewhere, but I think [this](http://matrixmultiplication.xyz/) is the best way to visualize it. The simplest implementation (multiplying two `N*N` matrices) goes like this: 
 ```cpp
@@ -311,4 +342,6 @@ This was partially inspired by some George Hotz streams I watched:
 All the code in this post can be found on [GitHub](https://github.com/boopdotpng/cuda-matmuls).
 
 For another perspective on CUDA and GPU architecture, see the guide at [modal.com](https://modal.com/gpu-glossary). 
+
+[Nvidia blackwell architecture whitepaper](https://resources.nvidia.com/en-us-blackwell-architecture).
 
