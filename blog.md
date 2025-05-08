@@ -1,28 +1,74 @@
-This post is an in depth overview on GPU architecture and how to write performant GPU code. 
+# How to actually write fast GPU code?
+This post is an in depth overview on GPU architecture and how to write performant GPU code. It covers execution hierarchy, memory layout, scheduling, memory access patterns, and basic profiling. The goal is to build enough knowledge to write a SGEMM (single precision general matrix multiply) kernel that achieves more than 10 TFLOPS on any high-end GPU. 
 
-To write fast GPU code, you need to know how your instructions are scheduled and executed, and how memory is accessed in each kernel. Unlike a CPU, a GPU is massively parallel and requires a completely different mental model, which we will build in the following sections.
-## Compute layout & memory
-The fundamental hardware unit in a GPU is the SM (Streaming Multiprocessor). Here is where a SM sits inside a GPU. 
-```
-GPU  
-├── GPC (graphics processing cluster)
-│   └── TPC (texture processing cluster)
-│       └── SM (streaming multiprocessor) — 70 total on RTX 5070 Ti
-│           ├── 128 CUDA cores (scalar FP32/INT32 ALUs)
-│           ├── 4 Tensor cores (matrix-multiply units)
-│           ├── Special Function Units (exp, sin, etc.)
-│           ├── Warp schedulers (typically 4 per SM)
-│           ├── Register file (64–256 KB per SM)
-│           ├── Load/Store units
-│           └── Shared memory / L1 cache (64–164 KB)
-├── L2 cache (shared across all SMs, 70 MB on 4090)
-└── Global memory (DRAM, 8–192 GB depending on model)
-```
+The specifics in this guide, including naming and the specific capabilities of each SM are tailored to Nvidia's Blackwell generation of cards. However, most of this guide is still applicable to GPUs in general. The fundamental concepts and architecture remain mostly the same. 
+## GPU Architecture Overview
+This is a high level chart that shows the hierarchy of components in a GPU. The GPC is the highest abstraction layer at the top of the GPU, and there are usually 6-12 per chip. 
+<svg width="700" height="580" xmlns="http://www.w3.org/2000/svg" style="font-family: monospace; font-size: 14px">
+  <!-- GPU Box -->
+  <rect x="20" y="20" width="660" height="540" fill="#121212" stroke="#aaa" stroke-width="1.5"/>
+  <text x="30" y="40" fill="#fff">GPU</text>
 
-### Types of memory on a GPU
-Before we go through the execution model, it's important to understand where each layer of memory is on a GPU and the cost of accessing each layer. The execution model relies heavily on the memory layout. 
+  <!-- GPC Box -->
+  <rect x="40" y="60" width="620" height="320" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="50" y="80" fill="#fff">GPC (Graphics Processing Cluster)</text>
 
-Memory access is the dominant bottleneck in most kernels, and performance depends not just on what you compute, but where your data lives and how it's accessed. Let’s examine the memory system in detail.
+  <!-- TPC 1 -->
+  <rect x="60" y="100" width="580" height="120" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="70" y="120" fill="#fff">TPC (Texture Processing Cluster)</text>
+  <!-- SM Boxes in TPC 1 -->
+  <rect x="80" y="130" width="260" height="80" fill="#4d2d2d" stroke="#aaa"/>
+  <text x="90" y="150" fill="#fff">SM (Streaming Multiprocessor)</text>
+  <text x="90" y="170" fill="#ddd">- 128 cores, 4 tensor cores</text>
+  <rect x="360" y="130" width="260" height="80" fill="#4d2d2d" stroke="#aaa"/>
+  <text x="370" y="150" fill="#fff">SM (Streaming Multiprocessor)</text>
+  <text x="370" y="170" fill="#ddd">- 128 cores, 4 tensor cores</text>
+
+  <!-- TPC 2 -->
+  <rect x="60" y="240" width="580" height="120" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="70" y="260" fill="#fff">TPC (Texture Processing Cluster)</text>
+  <!-- SM Boxes in TPC 2 -->
+  <rect x="80" y="270" width="260" height="80" fill="#4d2d2d" stroke="#aaa"/>
+  <text x="90" y="290" fill="#fff">SM (Streaming Multiprocessor)</text>
+  <text x="90" y="310" fill="#ddd">- 128 cores, 4 tensor cores</text>
+  <rect x="360" y="270" width="260" height="80" fill="#4d2d2d" stroke="#aaa"/>
+  <text x="370" y="290" fill="#fff">SM (Streaming Multiprocessor)</text>
+  <text x="370" y="310" fill="#ddd">- 128 cores, 4 tensor cores</text>
+
+  <!-- L2 Cache Box -->
+  <rect x="40" y="400" width="620" height="40" fill="#4d4d2d" stroke="#aaa"/>
+  <text x="50" y="425" fill="#fff">L2 Cache — 70 MB on 4090, shared across all SMs</text>
+
+  <!-- Global Memory Box -->
+  <rect x="40" y="450" width="620" height="60" fill="#2d4d4d" stroke="#aaa"/>
+  <text x="50" y="480" fill="#fff">Global Memory — 8–192 GB (GDDR6/GDDR7 or HBM), off-chip DRAM</text>
+</svg>
+[High Yield](https://www.youtube.com/@HighYield) makes great videos on chip architecture (the 5090 video is particularly relevant here). In these videos, you can roughly see the blocks on the actual GPU silicon that correspond to the caches, memory controllers, PCIe controllers, etc.
+
+The purpose of the GPC and TPC is to organize SMs (the main compute of the GPU) into modular blocks that have their own memory, cache, instruction dispatch, and texture units. Without this abstraction, there would be excessive contention for global resources and scaling the chip across product tiers would be much more difficult. 
+
+GPCs in traditional consumer GPUs also handle rasterization and graphics functions. In compute-only GPUs like the Nvidia H100, they may be optimized for throughput. 
+### Streaming Multiprocessors 
+The individual components in an SM can be split roughly into Compute and Memory. 
+
+| Element                | Notes                                                                                                              | Count / Size Per SM |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------- |
+| **Compute Units**      |                                                                                                                    |                     |
+| CUDA cores             | Scalar ALUs that can execute one FP32 or INT32 instruction per clock cycle, per core, on a single operand. <br>    | 128                 |
+| Tensor cores           | Accelerates small matrix multiply-accumulate ops using mixed precision (FP16, BF16, TF32).                         | 4                   |
+| Special Function Units | Handles transcendental and high-latency functions: sin, cos, exp, sqrt, etc.                                       | 4                   |
+| Warp schedulers        | Manages instruction dispatch for one warp (32 threads) per cycle, directing execution to available CUDA cores.<br> | 4                   |
+| Load/Store units       | Interface for memory ops (load, store). Routes data to/from memory hierarchy.                                      | 4–8                 |
+|                        |                                                                                                                    |                     |
+| **Memory Units**       |                                                                                                                    |                     |
+| Register file          | Fast, per-thread memory used for all intermediate values. Like CPU registers, but all 32-bit.                      | 128–256 KB          |
+| Shared memory/L1 cache | Low-latency, per-SM memory. Shared memory is stored in L1 cache and is managed by the programmer.                  | 64–164 KB           |
+Most, if not all of the compute on a GPU is done by CUDA cores. Some very specific datatypes (fp16, bf16, tf32, etc) are offloaded to other parts of the SM (tensor cores for example), along with all exp, sin, cos-adjacent computations (SFUs). 
+
+All instructions are ultimately scheduled at the warp level. The four warp schedulers per SM each handle one 32 thread warp independently. 
+
+Each SM contains its own registers, shared memory, and access to the L1 cache. These memory units are part of a greater hierarchy that defines how memory is accessed inside of a kernel.
+### Memory Hierarchy
 
 | Memory type          | Latency (cycles) | Bandwidth  | notes                        |
 | -------------------- | ---------------- | ---------- | ---------------------------- |
@@ -30,124 +76,113 @@ Memory access is the dominant bottleneck in most kernels, and performance depend
 | L2 cache             | 100-200          | 1-2 TB/s   | shared between SMs           |
 | L1 cache/shared      | 20-40            | 1-2 TB/s   | per-sm, fast for threads     |
 | Register file        | 1-4              | >10 TB/s   | per-core, extremely fast<br> |
+Accessing memory is far more time intensive than the actual compute. The largest contributor to this latency is global memory. These bandwidth numbers represent peak throughput across all SMs and varies by architecture. 
 #### Global memory 
 Global memory is accessible to all SMs and represents the largest but slowest memory region on the GPU, typically implemented as off-chip GDDR6 or GDDR7 DRAM. It serves as the main interface between CPU and GPU, storing model weights, input datasets, and output buffers.
 
 When you call `cudaMalloc`, the pointer returned points to a region in this memory.
 #### L2 cache
-L2 cache is a unified cache shared by all SMs that sits between global memory and cores. It caches reads from global memory to reduce latency and memory traffic. All global reads and writes pass through it, though reads benefit way more. 
+L2 cache is a unified, on chip cache shared by all SMs. It sits between global memory and the SMs, buffering data to reduce access latency and minimize redundant memory traffic. 
 #### L1 cache / shared memory 
-L1 cache is fast, low latency cache local to each SM and typically shares physical space with shared memory. Shared memory is explicitly allocated in a kernel using the `__shared__` keyword inside a kernel and is accessible only to threads within the same block. Because of its speed and block level scope, it's often used to stage data from global memory, reducing costly global reads. This is a critical tool for optimizing memory-bound kernels.
+L1 cache is fast, low latency cache local to each SM and typically shares physical space with shared memory. Shared memory is explicitly allocated in a kernel using the `__shared__` keyword inside a kernel and is accessible only to threads within the same block. Because of its speed and block-level scope, it's often used to stage data from global memory, reducing costly global reads. This is a critical tool for optimizing memory-bound kernels.
 #### Register file
 These closely resemble registers on a CPU, except there are many times more per core in a GPU. Total capacity per SM is around 128 KB (architecture-dependent), which is divided across all active threads. Each thread gets its own private set of registers, and the number used per thread directly affects how many threads can run concurrently on an SM. There are different kinds of registers (general-purpose, predicate, special), but these distinctions only become relevant when examining PTX (NVIDIA’s intermediate representation) or SASS (its assembly-level counterpart).
-
-You can view register usage by compiling with `nvcc --ptxas-options=-v kernel.cu`. This prints how many registers each thread in your kernel uses. The main constraint is that you cannot overuse registers: if your kernel allocates too many per thread, fewer threads can be scheduled on each SM, reducing occupancy. This limits the GPU's ability to hide latency by switching between warps. If usage exceeds hardware limits, the compiler will spill values into local memory, which is actually backed by slow global memory.
-
 #### Memory coalescing 
-Think of every memory access as an independent transaction. In a warp (group of 32 threads), coalescing allows the GPU to combine many smaller memory accesses into one large one. For example, let's say you had 32 floats stored in global memory. You launch 32 threads (one warp) that each read one float and perform an operation on it. Because all 32 floats in memory are stored side by side, the GPU can compress your 32 individual read instructions into one giant 1024-bit read. This reduces the number of read requests, reduces latency, and greatly speeds up your kernel. 
-
-On the other hand, let's now hypothetically say that your 32 floats are located far apart in memory. Thread 0 reads `A[0]`, thread 1 reads `A[1000]`, etc. Now, the GPU can't merge your memory transactions. It has to issue 32 separate memory transactions and wait for the data to be available to each warp. The memory bus is now underutilized, and so is your SM, because it's spending most of the clock cycles waiting for memory accesses. Since each global memory read takes 400-800 cycles, this adds a significant amount of execution time. L1 and L2 cache partially mitigate this issue, but they only absorb repeated access to the same data. When access patterns are irregular and non-repeating, cache can't help, and memory coalescing becomes the dominant performance factor. 
-
+Think of every memory access as an independent transaction.  When a warp of 32 threads accesses memory, the GPU attempts to merge (coalesce) those individual accesses into a few larger transactions. This is most effective when threads access memory in a regular, aligned pattern. Scattered accesses result in many memory transactions, which adds latency and increases the time we have to wait for data to be available. We'll explore this more in the matrix multiplication section.
 ### Execution model 
 
-CUDA cores are simple ALUs that execute FP32 or INT32 operations,  one instruction per data element. Under ideal conditions (when instructions are ready and memory access isn't stalled), a core can perform one floating point operation per clock cycle. This is the basis for theoretical GPU throughput: multiplying the number of cores by the GPU's clock speed gives the peak number of instructions per second.
+The GPU execution model follows a hierarchy; from bottom to top: 
 
-For a RTX 5070ti: 
-- SMs: 70
-- Cuda cores per SM: 128
-- Total CUDA cores: 8,960
-- Boost clock: 2.45 Ghz
-- Peak FP32 throughput: 8,960 × 2.45 × 10⁹ × 2 = 43.9 TFLOPS (trillion floating point operations per second)
+A **thread** is the smallest unit of execution on the GPU. Every thread runs its own instance of the kernel function, with its operations independently scheduled on CUDA cores.
 
-**Why are we multiplying by 2?**
-Modern GPUs implement FP32 arithmetic using FMA (fused multiply-add) units, which perform a multiplication and addition per clock cycle. Since this counts as two operations, the effective throughput per core per clock cycle is doubled. 
+A **warp** is a fixed group of 32 threads (all from the same block) that are executed in lockstep under the SIMT (single instruction multiple thread) model. Each SM has 4 warp schedulers, each capable of issuing one instruction per cycle to a warp. In practice, the SM can track and switch between dozens of warps (active or stalled), depending on occupancy. This is crucial for mitigating memory latency. If memory access is slower for one warp, it can be put aside and executed later once the data is ready. Context switching like this is extremely cheap on a GPU.
 
-## How is a kernel executed on a GPU? 
+A **block** is a group of threads (up to 1024) that execute together and share memory. Blocks are assigned to individual SMs, and multiple blocks can be scheduled on the same SM if there are enough available resources (dependent on register and shared memory usage). The number of active threads and blocks per SM is known as occupancy. 
 
-Real world performance, however, is usually much slower than this theoretical maximum. To figure out why, we have to go through the execution model: 
-
-A thread is the smallest unit of execution. Every thread runs your kernel function, and all operations are scheduled on CUDA cores. 
-
-A warp is a group 32 threads (all in the same block) that are executed at the same time. 
-
-A block is a group of threads. Nvidia imposes a hard limit on the maximum amount of threads you can have in a block (almost always 1024). 
-
-A grid is a grouping of blocks.
-
-
-
-
-## A basic GPU kernel launch 
+A **grid** is a collection of blocks that covers all blocks and threads launched by the kernel and spans the entire GPU. Blocks within a grid cannot communicate or share memory with each other. 
+## Basic kernel example
 A kernel launch consists of the following: 
 1. A GPU kernel function
 2. Number of blocks 
 3. Number of threads per block
+4. The data you want to write 
 
-A block is a group of threads that run together on one SM with access to shared memory and thread-level sync (will get to this in a future kernel). Blocks are distributed to SMs over time. If you launch more blocks than SMs, it queues the remaining blocks for future execution. A block is always fully contained in an SM. However, a SM might hold multiple blocks depending on the following: 
-- Max threads per SM (limit set by Nvidia: usually 1024) 
-- Max blocks per SM (32) 
-- Shared memory per SM
-- Register usage per thread / block (you can see this using `nvcc`)
+### 1D Dispatch 
 
-It's important to realize that warps, not blocks, are the unit of scheduling. A SM executes one warp per cycle per warp scheduler (usually 4 per SM). An SM can run multiple warps, potentially from multiple blocks concurrently. 
-#### Implicit kernel parameters 
  Consider the following kernel that adds two arrays `A+B` and stores the output in another array `C`. We'll assume that `len(a) = len(b) = len(c) = 1000`.
- 
 ```cpp
 __global__ void add(const float *a, const float *b, float *c) {
 	int gid = blockIdx.x * blockDim.x + threadIdx.x;
+	if (gid >= 1000) return;
 	c[gid] = a[gid] + b[gid];
 }
 ```
 
-The `gid` calculation here is done based on a few parameters that are implicitly passed into every kernel. They tell the thread where it is in the grid relative to other threads. This is how we each thread knows which index of `c` it's updating.
+In this kernel, the first thread calculates `c[0] = a[0] + b[0]`, the second `c[1] = a[1] + b[1]`, and so on. This requires us to launch 1000 threads. 
 
-```
-grid (1d)
-│
-├── block 0 -- blockIdx.x = 0 
-│   ├── thread 0 -- gid = 0 
-│   ├── thread 1
-│   ├── thread 2 -- threadIdx.x = 2
-│
-├── block 1 -- blockIdx.x = 1
-│   ├── thread 0 -- gid = 3
-│   ├── thread 1 -- threadIdx = 1
-│   ├── thread 2
-│
-├── block 2 
-│   ├── thread 0 -- gid = 6
-│   ├── thread 1 -- gid = 7
-│   ├── thread 2 -- gid = 8 
+To launch this kernel, we need to determine the launch configuration -- specifically the number of blocks and threads per block. 
 
-Dispatching 3 blocks with 3 threads each. (9 threads total)
-```
+The typical approach is to choose the number of threads per block, and then compute how many blocks are needed to cover the entire kernel. In this example, we select 128 threads per block, which means we'll need 8 blocks to cover all 1000 threads (128 * 8 = 1024). 
 
-In this kernel, the first thread will calculate `c[0] = a[0] + b[0]`, the second will calculate `c[1] = a[1] + b[1]`, and so on. 
+**A note about overlaunching and powers of two:**
+Due to the way GPU hardware is designed, there are a couple important rules to keep in mind when deciding the number of threads per block. Threads are executed in groups of warps, consisting of 32 threads. To take full advantage of this, it's best to use a power-of-two number of threads per block. This avoids partially filled warps, which hurts throughput. 
 
-One small caveat is that it's suboptimal to launch a non-power-of-two number of threads per block. This is due to the GPU architecture we discussed above: 
-- You want warp aligned compute (threads are run in batches of 32)
-- Memory access is a aligned and predictable (this is important for cache) 
- 
- Generally, you decide the number of threads per block first, and that decides the number of blocks you launch. In this case, we chose 128 threads per block, meaning that we'd need 8 blocks to fully cover the 1000 element array.
+However, following this rule results in launching more threads than are necessary. In this example, we launched 24 extra threads (1024 - 1000). To prevent these threads from accessing out-of-bounds memory, we add a guard that exits the kernel if the thread number is more than 999.
 
-| Parameter | Notes                               | Example for add kernel |
-| --------- | ----------------------------------- | ---------------------- |
-| blockIdx  | Which block is this thread in?      | 0 to 7                 |
-| blockDim  | How many threads are in each block? | 128                    |
-| threadIdx | Where in the block is this thread?  | 0 to 127               |
-| gridDim   | How many total blocks are there?    | 8                      |
-Looking back at the gid calculation: 
+Back to the `gid` calculation:
+The GPU runtime injects couple parameters that tell each thread where it is in the grid, so you can determine where each thread should be writing. 
+
+| Parameter | Notes                               | Example for add kernel |     |
+| --------- | ----------------------------------- | ---------------------- | --- |
+| blockIdx  | Which block is this thread in?      | 0 to 7                 |     |
+| blockDim  | How many threads are in each block? | 128                    |     |
+| threadIdx | Where in the block is this thread?  | 0 to 127               |     |
+| gridDim   | How many total blocks are there?    | 8                      |     |
+<svg width="700" height="520" xmlns="http://www.w3.org/2000/svg" style="font-family: monospace; font-size: 14px">
+  <!-- Outer Grid Box -->
+  <rect x="20" y="20" width="660" height="470" fill="#121212" stroke="#aaa" stroke-width="1.5"/>
+  <text x="30" y="40" fill="#fff">grid (1d) gridDim = 3</text>
+  
+  <!-- Block 0 -->
+  <rect x="60" y="60" width="600" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="70" y="80" fill="#fff">Block 0 (x=0) blockDim = 3</text>
+  <!-- Threads in Block 0 -->
+  <rect x="100" y="100" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="110" y="130" fill="#fff">T0 (gid = 0)</text>
+  <rect x="280" y="100" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="290" y="130" fill="#fff">T1</text>
+  <rect x="460" y="100" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="470" y="130" fill="#fff">T2 (threadIdx = 2)</text>
+
+  <!-- Block 1 -->
+  <rect x="60" y="200" width="600" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="70" y="220" fill="#fff">Block 1 (x=1) blockIdx = 1</text>
+  <!-- Threads in Block 1 -->
+  <rect x="100" y="240" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="110" y="270" fill="#fff">T0 (gid = 3)</text>
+  <rect x="280" y="240" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="290" y="270" fill="#fff">T1 (threadIdx = 1)</text>
+  <rect x="460" y="240" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="470" y="270" fill="#fff">T2</text>
+
+  <!-- Block 2 -->
+  <rect x="60" y="340" width="600" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="70" y="360" fill="#fff">Block 2</text>
+  <!-- Threads in Block 2 -->
+  <rect x="100" y="380" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="110" y="410" fill="#fff">T0 (gid = 6)</text>
+  <rect x="280" y="380" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="290" y="410" fill="#fff">T1 (gid = 7)</text>
+  <rect x="460" y="380" width="160" height="60" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="470" y="410" fill="#fff">T2 (gid = 8)</text>
+</svg>
 ```cpp
 int gid = blockIdx.x * blockDim.x + threadIdx.x;
 ```
 We get the global id by multiplying which block the thread is in by how many total blocks there are, and then adding the position of the current thread in the block. This gives us the global position of the thread, relative to every other thread in the dispatch. 
 
-All the parameters here are actually three dimensional, but for this example only one dimension (x) is necessary. 2d and 3d dispatches are just abstractions over a 1d dispatch, and doesn't make a performance difference. It's mostly there to make indexing more convenient when you're indexing into matrices, as we will see later. 
-
-**A note about overlaunching:**
-You may have noticed we launched too many threads in the last example. Sometimes it's unavoidable, due to the power of 2 rule we imposed for `blockDim` earlier. The last 24 threads would end up accessing invalid memory `c[1000+]`. In order to guard against this, we place if statement in the kernel that exits if the gid is out of range.
-#### Visualizing a 2d dispatch
+All the parameters listed here are actually three dimensional, but for this example only one dimension (x) is necessary. 2d and 3d dispatches are just abstractions over a 1d dispatch, and mostly exists to make indexing more convenient when you're operating on matrices, as we will see later. 
+### Visualizing a 2d dispatch
 To visualize 2d thread dispatch, we write a kernel that records each thread's global (x,y) coordinates into a 2d matrix.
 ```cpp
 __global__ void record_thread_coords(int* coords, int width) {
@@ -162,20 +197,83 @@ __global__ void record_thread_coords(int* coords, int width) {
 ```
 
 The shape of `coords` is `(2,6,4)` represented as a flat `int[48]`. For each square in the `6,4` grid, we store 2 coordinates (`x,y`). We need to launch 24 threads to cover the entire grid. Consider the following arrangement, where `blockDim = (2,2)`, `gridDim = (2,3)`, and `total_threads = 2*2*2*3 = 24`:  
-```
-block (0,0)         block (1,0)
-| 0,0 | 0,1 |        | 0,2 | 0,3 |
-| 1,0 | 1,1 |        | 1,2 | 1,3 |
+<svg width="560" height="580" xmlns="http://www.w3.org/2000/svg" style="font-family: monospace; font-size: 14px">
+  <!-- Outer Grid Box -->
+  <rect x="20" y="20" width="520" height="540" fill="#121212" stroke="#aaa" stroke-width="1.5"/>
+  <text x="30" y="40" fill="#fff">grid (2d) gridDim = (2,3)</text>
 
-block (0,1)         block (1,1)
-| 2,0 | 2,1 |        | 2,2 | 2,3 |
-| 3,0 | 3,1 |        | 3,2 | 3,3 |
+  <!-- Block (0,0) -->
+  <rect x="40" y="60" width="180" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="50" y="80" fill="#fff">Block (0,0)</text>
+  <rect x="55" y="95" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="60" y="115" fill="#fff">(0,0)</text>
+  <rect x="135" y="95" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="140" y="115" fill="#fff">(0,1)</text>
+  <rect x="55" y="135" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="60" y="155" fill="#fff">(1,0)</text>
+  <rect x="135" y="135" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="140" y="155" fill="#fff">(1,1)</text>
 
-block (0,2)         block (1,2)
-| 4,0 | 4,1 |        | 4,2 | 4,3 |
-| 5,0 | 5,1 |        | 5,2 | 5,3 |
-```
+  <!-- Block (1,0) -->
+  <rect x="240" y="60" width="180" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="250" y="80" fill="#fff">Block (1,0)</text>
+  <rect x="255" y="95" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="260" y="115" fill="#fff">(0,2)</text>
+  <rect x="335" y="95" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="340" y="115" fill="#fff">(0,3)</text>
+  <rect x="255" y="135" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="260" y="155" fill="#fff">(1,2)</text>
+  <rect x="335" y="135" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="340" y="155" fill="#fff">(1,3)</text>
 
+  <!-- Block (0,1) -->
+  <rect x="40" y="200" width="180" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="50" y="220" fill="#fff">Block (0,1)</text>
+  <rect x="55" y="235" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="60" y="255" fill="#fff">(2,0)</text>
+  <rect x="135" y="235" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="140" y="255" fill="#fff">(2,1)</text>
+  <rect x="55" y="275" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="60" y="295" fill="#fff">(3,0)</text>
+  <rect x="135" y="275" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="140" y="295" fill="#fff">(3,1)</text>
+
+  <!-- Block (1,1) -->
+  <rect x="240" y="200" width="180" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="250" y="220" fill="#fff">Block (1,1)</text>
+  <rect x="255" y="235" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="260" y="255" fill="#fff">(2,2)</text>
+  <rect x="335" y="235" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="340" y="255" fill="#fff">(2,3)</text>
+  <rect x="255" y="275" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="260" y="295" fill="#fff">(3,2)</text>
+  <rect x="335" y="275" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="340" y="295" fill="#fff">(3,3)</text>
+
+  <!-- Block (0,2) -->
+  <rect x="40" y="340" width="180" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="50" y="360" fill="#fff">Block (0,2)</text>
+  <rect x="55" y="375" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="60" y="395" fill="#fff">(4,0)</text>
+  <rect x="135" y="375" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="140" y="395" fill="#fff">(4,1)</text>
+  <rect x="55" y="415" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="60" y="435" fill="#fff">(5,0)</text>
+  <rect x="135" y="415" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="140" y="435" fill="#fff">(5,1)</text>
+
+  <!-- Block (1,2) -->
+  <rect x="240" y="340" width="180" height="120" fill="#2d2d4d" stroke="#aaa"/>
+  <text x="250" y="360" fill="#fff">Block (1,2)</text>
+  <rect x="255" y="375" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="260" y="395" fill="#fff">(4,2)</text>
+  <rect x="335" y="375" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="340" y="395" fill="#fff">(4,3)</text>
+  <rect x="255" y="415" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="260" y="435" fill="#fff">(5,2)</text>
+  <rect x="335" y="415" width="70" height="35" fill="#2d4d2d" stroke="#aaa"/>
+  <text x="340" y="435" fill="#fff">(5,3)</text>
+</svg>
 To illustrate the `gidx` and `gidy` calculations, let's go through the kernel for thread `2,3`.
 `blockIdx = (1,1)` `blockDim = (2,2)` `threadIdx = (0,1)`. 
 The x component of the global id is `1 * 2 + 0 = 2`.
@@ -204,10 +302,31 @@ Output (coords array):
 The printed coordinates are in `(col, row)` format, where `col` corresponds to the horizontal `x` axis and `row` to the vertical `y` axis. This mirrors standard 2d matrix conventions, where the first dimension indexes rows (`y`) and the second indexes columns (`x`). each entry `(x, y)` represents the global coordinates of a thread in the grid.
 
 You can see this example at [cuda-matmuls/misc/2d_dispatch_viz.cu](https://github.com/boopdotpng/cuda-matmuls/blob/master/misc/2d_dispatch_viz.cu).
-### GPU Memory  
 
-## Matrix multiplication on CPU
-Matrix multiplication is one of the most common dense compute kernels in machine learning. This section covers a series of increasingly optimized method for square matrices. There's a George Hotz clip involving matrices, cubes, and some vague hand movements out there somewhere, but I think [this](http://matrixmultiplication.xyz/) is the best way to visualize it. The simplest implementation (multiplying two `N*N` matrices) goes like this: 
+## Matrix multiplication
+
+### Theoretical matrix multiplication performance
+Matrix multiplication is one of the most common dense compute kernels in machine learning. This section covers a series of increasingly optimized matrix multiplication kernels. [This](http://matrixmultiplication.xyz/) is the best way to visualize it. 
+
+To find out how fast a matrix multiplication kernel can be on your GPU, you can use the `cuBLAS` library, which contains highly optimized kernels written by Nvidia. These kernels are fine tuned to extract the maximum performance from the hardware, and it's extremely difficult to outperform a `cuBLAS` kernel.
+
+All of the examples going forward will be multiplying two 4096x4096 matrices in single precision (SGEMM). 
+
+Performance is measured in TFLOPS (trillion floating point operations per second). In order to calculate the theoretical maximum FP32 performance for my GPU (a 5070 Ti): 
+- 70 SMs * 128 Cores per SM = 8960 Cuda Cores
+- Each Cuda core performs 2 operations per clock cycle (FMA = fused multiply-add) 
+- Boost clock: 2.45 GHz  = 2.45 * 10^9 cycles per second
+- Equals approximately 44 TFLOPS. 
+
+Now, let's estimate the number of operations required to multiply two square matrices of size 4096. Each of the `N^2` entries in matrix C requires a dot product between a row of A and a column of B, consisting of `N` multiplications and `N` additions. That’s `2N` floating point operations per entry, yielding a total of `2N^3` FLOPs.
+
+So the total number of operations is `2*4096^3 = 137,438,953,472`. 
+
+GFLOPS = `(2*4096^3) / (execution time in seconds × 10^9)`
+
+The `cuBLAS` kernel hovers around 34 TFLOPS on my GPU. 
+### Matrix multiplication on CPU
+The most straightforward `N*N` square matrix multiplication goes like this: 
 ```cpp
 float A[N][N], B[N][N], C[N][N];
 for (int i = 0; i < N; i++)
@@ -221,18 +340,12 @@ for (int i = 0; i < N; i++)
 
 For each output in C, we calculate the [dot product](https://en.wikipedia.org/wiki/Dot_product) of row `i` from matrix A and column `j` from matrix B. This is an incredibly slow way to multiply matrices: the time complexity is `O(n^3)` and it only achieves around 19 gflops for a 1024x1024 matrix. This example is missing SIMD instructions, use of multiple cores, cache-friendly access for B (memory access not coalesced), to name a few. 
 
-Each of the `N^2` entries in matrix C requires a dot product between a row of A and a column of B, consisting of `N` multiplications and `N` additions. That’s `2N` floating point operations per entry, yielding a total of `2N^3` FLOPs.
-
-So the total number of operations is `2*4096^3 = 137,438,953,472`. 
-
-GFLOPS = `(2N^3) / (execution time in seconds × 10^9)`
-
 Numpy delegates matrix multiplication to high performance BLAS libraries, which use multithreading and SIMD. They're extremely optimized, and a good way to figure out how far you are from the theoretical performance of your hardware. 
 ```bash
 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1 python -c "import numpy as np, time; N=4096; A=np.random.rand(N,N).astype(np.float32); B=np.random.rand(N,N).astype(np.float32); t0=time.time(); C=A@B; t1=time.time(); flops=2*N**3; dt=t1-t0; print(f'Time: {dt:.4f} s, GFLOPS: {flops/dt/1e9:.2f}')"
 ```
 This gets around 300 gflops on my Ryzen 7 9700x. For multi-threaded performance, just remove the environment variables (1,400 gflops).
-## The simplest GPU matrix multiplication 
+### The simplest GPU matrix multiplication 
 This code is a copy of the CPU matrix multiplication code, with the outer loops taken out. With one thread per element in the output matrix C (4096 * 4096 = 16,777,216) and 256 threads per block, we require `total_threads / 256 = 65,536` blocks. 
 The launch configuration is two dimensional: 
 `blockDim = (16,16)`  -> 256 threads per block,
@@ -249,7 +362,7 @@ __global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
 ```
 
 This gets around 680 gflops on a 5070 ti. However, there is a massive problem with the way global memory is accessed in this kernel. 
-### Profiling kernels
+#### Profiling kernels
 `ncu` is a really good way to profile kernels and understand how well the kernel is utilizing the GPU. You can see SM throughput, number of cycles, DRAM bandwidth, and a lot of other important statistics. Profiling this kernel using `ncu` (most values are excluded for brevity; a full comparison table will come later): 
 
 | Metric                     | Value (matmul_B_row_strided) | Unit   | Insight                             |
@@ -265,7 +378,7 @@ This gets around 680 gflops on a 5070 ti. However, there is a massive problem wi
 | Average L2 Active Cycles   | 5.04343e+08                  | cycles | high latency propagation            |
 | Average DRAM Active Cycles | 2.54577e+08                  | cycles | global memory is a major bottleneck |
 By looking at the elapsed cycles, you can tell that the SMs were active nearly the entire time, but throughput was only 22%. Also, the memory system (L1, L2, DRAM) was running for an alarmingly high percentage of the total cycles. We're doing almost no work in this kernel (22% SM throughput), but the cycle count is very high. This leads us to the conclusion that this kernel is memory bound.
-## Naive matmul (coalesced) 
+### Naive matmul (coalesced) 
 The root cause of the memory issues in the previous kernel is this line: 
 ```cpp
 sum += a[row * 4096 + i] * b[col * 4096 + i];
@@ -298,7 +411,7 @@ Below is the table for the coalesced memory accesses for the new kernel starting
 | 15          | 15  | `a[0]`                          | `b[0 * 4096 + 15]` | `b[15]`      |
 
 With this change, the kernel achieves around 2700 gflops. 
-#### NCU comparison table
+### NCU comparison table
 Here is a table comparing profiling results from the two kernels. The first column is the new kernel where we fixed the way B is accessed, and the second column is the old uncoalesced kernel that we profiled earlier.
 
 | Metric                     | Average (matmul_B_col_contiguous) | Average (matmul_B_row_strided) | Unit  |
@@ -326,14 +439,14 @@ The key differences to note here are:
 - Memory system cycles have gone down almost 5x
 - L2 cache throughput has gone up. Because we made our memory access more linear and predictable, the GPU is able to utilize the cache more. 
 - This kernel is nearly 4x faster than our previous one because of the above factors. 
-## Tiled matmul 
+### Tiled matmul 
 The next step is to reduce our global memory loads even further. We can do this by using shared memory (on L1 cache, local to each block). Instead of reading from global memory each time, we can copy a tile of the matrix (usually 16x16) into shared memory, and then calculate the dot products. This increases 
 
-## Optimizations & how can we reach peak performance? 
+### Optimizations & how can we reach peak performance? 
 
 
 
-# Resources 
+## Reference 
 
 This was partially inspired by some George Hotz streams I watched:
 - [how do GPUs work?](https://youtu.be/OUzm06YaUsI) 
@@ -344,4 +457,6 @@ All the code in this post can be found on [GitHub](https://github.com/boopdotpng
 For another perspective on CUDA and GPU architecture, see the guide at [modal.com](https://modal.com/gpu-glossary). 
 
 [Nvidia blackwell architecture whitepaper](https://resources.nvidia.com/en-us-blackwell-architecture).
+
+[High Yield: 5090 deep dive](https://youtu.be/rCwgAGG2sZQ)
 

@@ -15,7 +15,7 @@ __global__ void tiled_matmul(const float *a, const float *b, float *c) {
       __syncthreads();
 
       for (int k = 0; k < TILE; ++k)
-        acc += Asub[threadIdx.y][k]   * Bsub[k][threadIdx.x];
+        acc += Asub[threadIdx.y][k] * Bsub[k][threadIdx.x];
       
       __syncthreads();
     }
