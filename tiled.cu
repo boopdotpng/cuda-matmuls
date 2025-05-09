@@ -3,8 +3,8 @@
 #include "utils.h"
 
 __global__ void tiled_matmul(const float *a, const float *b, float *c) {
-    uint row = blockIdx.y * TILE + threadIdx.y;
-    uint col = blockIdx.x * TILE + threadIdx.x;
+    uint row = blockIdx.y * blockDim.y + threadIdx.y;
+    uint col = blockIdx.x * blockDim.x + threadIdx.x;
     __shared__ float Asub[TILE][TILE];
     __shared__ float Bsub[TILE][TILE];
 
