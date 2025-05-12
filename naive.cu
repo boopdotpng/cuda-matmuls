@@ -2,7 +2,7 @@
 #include <vector>
 #include "utils.h"
 
-__global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
+__global__ void matmul_with_B_transposed(const float *a, const float *b, float *c) {
     uint row = blockIdx.y * blockDim.y + threadIdx.y;
     uint col = blockIdx.x * blockDim.x + threadIdx.x;
     float sum = 0.0f;
@@ -11,7 +11,7 @@ __global__ void matmul_B_row_strided(const float *a, const float *b, float *c) {
     c[row * N + col] = sum;
 }
 
-__global__ void matmul_B_col_contiguous(const float *a, const float *b, float *c) {
+__global__ void matmul_naive_B_untransposed(const float *a, const float *b, float *c) {
     uint row = blockIdx.y * blockDim.y + threadIdx.y;
     uint col = blockIdx.x * blockDim.x + threadIdx.x;
     float sum = 0.0f;
@@ -35,9 +35,9 @@ int main(int argc, const char *argv[]) {
     for (int i = 0; i < RUNS; ++i) {
         cudaEventRecord(start);
         if (argc > 1)
-            matmul_B_col_contiguous<<<nb, tpb>>>(bufs.A, bufs.B, bufs.C);
+            matmul_naive_B_untransposed<<<nb, tpb>>>(bufs.A, bufs.B, bufs.C);
         else
-            matmul_B_row_strided<<<nb, tpb>>>(bufs.A, bufs.B_t, bufs.C);
+            matmul_with_B_transposed<<<nb, tpb>>>(bufs.A, bufs.B_t, bufs.C);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&ms, start, stop);

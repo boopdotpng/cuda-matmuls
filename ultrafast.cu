@@ -3,8 +3,8 @@
 #include "utils.h"
 
 __global__ void __launch_bounds__(256) tiled_matmul(const float *__restrict__ a, const float *__restrict__ b, float *__restrict__ c) {
-    uint row = blockIdx.y * TILE + threadIdx.y;
-    uint col = blockIdx.x * TILE + threadIdx.x;
+    const uint row = blockIdx.y * TILE + threadIdx.y;
+    const uint col = blockIdx.x * TILE + threadIdx.x;
     __shared__ float Asub[TILE][TILE];
     __shared__ float Bsub[TILE][TILE];
 
@@ -20,7 +20,6 @@ __global__ void __launch_bounds__(256) tiled_matmul(const float *__restrict__ a,
       
       __syncthreads();
     }
-
     c[row * N + col] = acc;
 }
 
