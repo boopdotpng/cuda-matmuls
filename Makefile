@@ -1,40 +1,26 @@
-# 5070 ti 
-ARCH        = -gencode=arch=compute_120,code=sm_120
+# Auto-detect GPU architecture
+GPU_ARCH := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')
+ifeq ($(GPU_ARCH),)
+  $(warning Could not detect GPU, defaulting to sm_75 (Turing))
+  GPU_ARCH := 75
+endif
+
+ARCH        = -gencode=arch=compute_$(GPU_ARCH),code=sm_$(GPU_ARCH)
 NVCC        = nvcc
-NVCCFLAGS   = $(ARCH) -I utils/ -Wno-deprecated-gpu-targets -O3 -use_fast_math \
-              -Xcompiler "-O3 -mavx2 -mfma -march=native"
+NVCCFLAGS   = $(ARCH) -Wno-deprecated-gpu-targets -O3 -use_fast_math \
+              -Xcompiler "-O3 -march=native"
 
-UTILS       = utils/utils.cu
-NAIVE_SRC   = naive.cu
-TILED_SRC   = tiled.cu
-ULTRAFAST_SRC = ultrafast.cu
-CPU_SRC     = cpu_matmul.cpp
+UTILS = utils.cu
 
-NAIVE_BIN   = outs/naive
-TILED_BIN   = outs/tiled
-ULTRAFAST_BIN = outs/ultrafast
-CPU_BIN     = outs/cpu_matmul
+all: f32_naive f32_tiled
 
-GCC         = g++
-GCCFLAGS    = -march=native -O2
+f32_naive: f32/naive.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) f32/naive.cu $(UTILS) -o f32_naive
 
-all: naive tiled ultrafast cpu
-
-naive: $(NAIVE_SRC) $(UTILS)
-	@mkdir -p outs
-	$(NVCC) $(NVCCFLAGS) $(NAIVE_SRC) $(UTILS) -o $(NAIVE_BIN)
-
-tiled: $(TILED_SRC) $(UTILS)
-	@mkdir -p outs
-	$(NVCC) $(NVCCFLAGS) $(TILED_SRC) $(UTILS) -o $(TILED_BIN)
-
-ultrafast: $(ULTRAFAST_SRC) $(UTILS)
-	@mkdir -p outs
-	$(NVCC) $(NVCCFLAGS) $(ULTRAFAST_SRC) $(UTILS) -o $(ULTRAFAST_BIN)
-
-cpu: $(CPU_SRC)
-	@mkdir -p outs
-	$(GCC) $(GCCFLAGS) $(CPU_SRC) -o $(CPU_BIN)
+f32_tiled: f32/tiled.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) f32/tiled.cu $(UTILS) -o f32_tiled
 
 clean:
-	rm -f $(NAIVE_BIN) $(TILED_BIN) $(ULTRAFAST_BIN) $(CPU_BIN)
+	rm -f f32_naive f32_tiled
+
+.PHONY: all clean

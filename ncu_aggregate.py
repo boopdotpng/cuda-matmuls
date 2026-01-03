@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import sys
-import re
 from tabulate import tabulate
 
 def parse_runs(lines):

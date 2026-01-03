@@ -1,16 +1,38 @@
-# Increasingly fast cuda matmuls
+# Increasingly fast CUDA matmuls
 
-See blog post at ___ # todo put it here. 
+CUDA matmul kernels that get progressively faster.
 
+## Structure
 
-## Running the examples
+- `f32/`: fp32 CUDA kernels (naive, tiled)
+- `f16/`: fp16 CUDA kernels (to be implemented)
+- `utils.h`, `utils.cu`: shared utilities and benchmark framework
+- `data/`: generated input/output tensors (not committed)
+- `generate_inputs.py`: generate test data (uses tinygrad for fp16)
+- `ncu_aggregate.py`: aggregate NCU profiler outputs
+- `cu2asm.sh`: convert .cu files to PTX/SASS assembly
 
+## Quickstart
 
-## NCU Aggregate
+Python deps: `numpy`, `tinygrad` (for fp16 generation)
 
-## Misc files 
+Generate input tensors:
+```bash
+python3 generate_inputs.py
+```
 
-## Profiles
+Build (auto-detects GPU architecture):
+```bash
+make
+```
 
+Run:
+```bash
+./f32_naive
+./f32_tiled
+```
 
-## Roadmap 
+Generate assembly:
+```bash
+./cu2asm.sh f32/tiled.cu
+```
