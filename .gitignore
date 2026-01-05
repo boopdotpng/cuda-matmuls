@@ -10,7 +10,12 @@ __pycache__/
 *.ptx
 *.sass
 *.cubin
+*_profile.md
+*.nsys-rep
+*.nsys-rep.*
+*.sqlite
 f32_naive
 f32_tiled
 f16_naive
 f16_tiled
+*.txt

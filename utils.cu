@@ -1,6 +1,7 @@
 #include "utils.h"
 #include <cmath>
 #include <cstdio>
+#include <cuda_profiler_api.h>
 
 template<typename T>
 std::vector<T> read_binary(const std::string& path) {
@@ -87,11 +88,13 @@ float benchmark_kernel(KernelFunc kernel, dim3 grid, dim3 block, T* a, T* b, T* 
   // 5 real runs
   float total_tflops = 0.0f;
   for (int i = 0; i < 5; ++i) {
+    if (i == 4) cudaProfilerStart();
     cudaEventRecord(start);
     kernel<<<grid, block>>>(a, b, c);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&ms, start, stop);
+    if (i == 4) cudaProfilerStop();
 
     float tflops = (2.0 * N * N * N / 1e12) / (ms / 1000.0);
     total_tflops += tflops;
