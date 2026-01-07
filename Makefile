@@ -13,24 +13,24 @@ CUTLASS_INC = -I./cutlass/include -I./cutlass/tools/util/include
 
 UTILS = utils.cu
 
-all: f32_naive f32_tiled f16_wmma f16_cublas
+all: f32_naive.out f32_tiled.out f16_wmma.out f16_cublas.out
 
-f32_naive: f32/naive.cu $(UTILS)
-	$(NVCC) $(NVCCFLAGS) f32/naive.cu $(UTILS) -o f32_naive
+f32_naive.out: f32/naive.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) f32/naive.cu $(UTILS) -o f32_naive.out
 
-f32_tiled: f32/tiled.cu $(UTILS)
-	$(NVCC) $(NVCCFLAGS) f32/tiled.cu $(UTILS) -o f32_tiled
+f32_tiled.out: f32/tiled.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) f32/tiled.cu $(UTILS) -o f32_tiled.out
 
-f16_wmma: f16/wmma.cu $(UTILS)
-	$(NVCC) $(NVCCFLAGS) f16/wmma.cu $(UTILS) -o f16_wmma
+f16_wmma.out: f16/wmma.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) f16/wmma.cu $(UTILS) -o f16_wmma.out
 
-f16_cutlass: f16/cutlass_gemm.cu $(UTILS)
-	$(NVCC) $(NVCCFLAGS) $(CUTLASS_INC) -std=c++17 f16/cutlass_gemm.cu $(UTILS) -o f16_cutlass
+f16_cutlass.out: f16/cutlass_gemm.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) $(CUTLASS_INC) -std=c++17 f16/cutlass_gemm.cu $(UTILS) -o f16_cutlass.out
 
-f16_cublas: f16/cublas_gemm.cu $(UTILS)
-	$(NVCC) $(NVCCFLAGS) f16/cublas_gemm.cu $(UTILS) -lcublas -o f16_cublas
+f16_cublas.out: f16/cublas_gemm.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) f16/cublas_gemm.cu $(UTILS) -lcublas -o f16_cublas.out
 
 clean:
-	rm -f f32_naive f32_tiled f16_wmma f16_cutlass f16_cublas
+	rm -f *.out
 
 .PHONY: all clean

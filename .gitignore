@@ -15,10 +15,4 @@ __pycache__/
 *.nsys-rep.*
 *.sqlite
 *.txt
-
-# executables
-f32_naive
-f32_tiled
-f16_wmma
-f16_cublas
-f16_cutlass
+*.out
