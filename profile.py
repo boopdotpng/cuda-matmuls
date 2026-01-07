@@ -233,6 +233,19 @@ def csv_text_to_markdown(text: str) -> str:
       out.append("\n")
   return "".join(out).rstrip() + "\n"
 
+def extract_sass_instructions(sass_dump: str) -> str:
+  """Extract just the instruction mnemonics and operands from SASS dump."""
+  lines = sass_dump.splitlines()
+  instructions = []
+  inst_re = re.compile(r'^\s*/\*[0-9a-f]+\*/\s+(.+?)\s*(?:;.*)?$', re.IGNORECASE)
+
+  for line in lines:
+    m = inst_re.match(line)
+    if m:
+      instructions.append(m.group(1).strip())
+
+  return "\n".join(instructions) if instructions else "(No SASS instructions found)"
+
 def main():
   ap = argparse.ArgumentParser(
     description="Run an executable normally, then run curated Nsight Compute passes + dump PTX/SASS into one report."
@@ -273,8 +286,8 @@ def main():
     if kernel_source:
       kernel = extract_first_kernel_from_source(kernel_source)
     if not kernel:
-      print("ERROR: failed to auto-detect kernel name. Pass the kernel substring or --src <file.cu>.", file=sys.stderr)
-      sys.exit(1)
+      print("WARNING: failed to auto-detect kernel name. Profiling all kernels.", file=sys.stderr)
+      kernel = ".*"
     kernel_auto = True
 
   exe_base = os.path.basename(exe)
@@ -312,6 +325,15 @@ def main():
       rc, out, err = run_tee(cmd_sass, cwd=args.cwd)
       filtered = extract_cuobjdump_function_block(out, kernel)
       write_cmd_block_md(f, "STEP 2B: cuobjdump --dump-sass (filtered to kernel)", cmd_sass, rc, filtered, err)
+
+      # Extract just the instructions in a simple format
+      sass_instructions = extract_sass_instructions(filtered)
+      write_header_md(f, "STEP 2C: SASS Instructions (assembly format)")
+      f.write("```asm\n")
+      f.write(sass_instructions)
+      if not sass_instructions.endswith("\n"):
+        f.write("\n")
+      f.write("```\n")
     else:
       write_header_md(f, "STEP 2: cuobjdump not found")
       f.write("Install CUDA toolkit (or ensure cuobjdump is in PATH) to dump embedded PTX/SASS from the executable.\n")
