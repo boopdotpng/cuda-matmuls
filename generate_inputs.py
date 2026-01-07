@@ -35,9 +35,9 @@ def generate_matmul_data_f16(n: int, out_dir: Path) -> None:
   a_fp16.tofile(out_dir / "A.bin")
   b_fp16.tofile(out_dir / "B.bin")
   b_fp16.T.tofile(out_dir / "B_t.bin")
-  c_fp32.astype(np.float16).tofile(out_dir / "C.bin")
+  c_fp32.tofile(out_dir / "C.bin")
 
-  print(f"saved fp16 A * B (both {n}x{n}) and fp16 C to {out_dir}/")
+  print(f"saved fp16 A * B (both {n}x{n}) and fp32 C to {out_dir}/")
 
 
 def main() -> None:
