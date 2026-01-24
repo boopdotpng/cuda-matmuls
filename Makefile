@@ -13,7 +13,7 @@ CUTLASS_INC = -I./cutlass/include -I./cutlass/tools/util/include
 
 UTILS = utils.cu
 
-all: f32_naive.out f32_tiled.out f16_wmma.out f16_cublas.out
+all: f32_naive.out f32_tiled.out f16_wmma.out f16_cublas.out f16_ptx.out
 
 f32_naive.out: f32/naive.cu $(UTILS)
 	$(NVCC) $(NVCCFLAGS) f32/naive.cu $(UTILS) -o f32_naive.out
@@ -29,6 +29,9 @@ f16_cutlass.out: f16/cutlass_gemm.cu $(UTILS)
 
 f16_cublas.out: f16/cublas_gemm.cu $(UTILS)
 	$(NVCC) $(NVCCFLAGS) f16/cublas_gemm.cu $(UTILS) -lcublas -o f16_cublas.out
+
+f16_ptx.out: f16/ptx_matmul.cu $(UTILS)
+	$(NVCC) $(NVCCFLAGS) f16/ptx_matmul.cu $(UTILS) -o f16_ptx.out
 
 clean:
 	rm -f *.out

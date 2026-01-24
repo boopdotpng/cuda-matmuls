@@ -2,92 +2,45 @@
 #include <cublas_v2.h>
 #include "../utils.h"
 
-int main(int argc, const char *argv[]) {
-  (void)argc;
-  (void)argv;
+int main() {
+  auto a = read_binary<half>("./data/f16/A.bin");
+  auto b = read_binary<half>("./data/f16/B.bin");
+  auto ref = read_binary<float>("./data/f16/C.bin");
 
-  const std::string data_dir = "./data/f16";
-  auto host_a = read_binary<half>(data_dir + "/A.bin");
-  auto host_b = read_binary<half>(data_dir + "/B.bin");
-  auto host_c = read_binary<float>(data_dir + "/C.bin");
+  half *dA, *dB; float *dC;
+  size_t szh = N * N * sizeof(half), szf = N * N * sizeof(float);
+  cudaMalloc(&dA, szh); cudaMalloc(&dB, szh); cudaMalloc(&dC, szf);
+  cudaMemcpy(dA, a.data(), szh, cudaMemcpyHostToDevice);
+  cudaMemcpy(dB, b.data(), szh, cudaMemcpyHostToDevice);
 
-  half *dA = nullptr;
-  half *dB = nullptr;
-  float *dC = nullptr;
-  const size_t sz_half = N * N * sizeof(half);
-  const size_t sz_float = N * N * sizeof(float);
-  cudaMalloc(&dA, sz_half);
-  cudaMalloc(&dB, sz_half);
-  cudaMalloc(&dC, sz_float);
-  cudaMemcpy(dA, host_a.data(), sz_half, cudaMemcpyHostToDevice);
-  cudaMemcpy(dB, host_b.data(), sz_half, cudaMemcpyHostToDevice);
+  cublasHandle_t h; cublasCreate(&h);
+  cublasSetMathMode(h, CUBLAS_TENSOR_OP_MATH);
+  float alpha = 1.0f, beta = 0.0f;
 
-  cublasHandle_t handle;
-  cublasCreate(&handle);
-
-  // Enable tensor cores
-  cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
-
-  const float alpha = 1.0f;
-  const float beta = 0.0f;
-
-  auto benchmark_cublas = [&]() {
-    // Use cublasGemmEx to explicitly control compute type
-    // CUBLAS_COMPUTE_32F = f16 inputs with f32 accumulation
-    // Row-major C = A * B becomes column-major C^T = B^T * A^T
-    // Pass B, A with CUBLAS_OP_N since row-major is already transposed in column-major view
-    return cublasGemmEx(
-      handle,
-      CUBLAS_OP_N, CUBLAS_OP_N,
-      N, N, N,
-      &alpha,
-      dB, CUDA_R_16F, N,  // B (f16)
-      dA, CUDA_R_16F, N,  // A (f16)
-      &beta,
-      dC, CUDA_R_32F, N,  // C (f32)
-      CUBLAS_COMPUTE_32F,     // f32 accumulation!
-      CUBLAS_GEMM_DEFAULT_TENSOR_OP
-    );
+  auto gemm = [&]() {
+    return cublasGemmEx(h, CUBLAS_OP_N, CUBLAS_OP_N, N, N, N, &alpha,
+      dB, CUDA_R_16F, N, dA, CUDA_R_16F, N, &beta, dC, CUDA_R_32F, N,
+      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
   };
 
-  // Warmup
-  benchmark_cublas();
-  cudaDeviceSynchronize();
+  gemm(); cudaDeviceSynchronize();
 
-  // Benchmark
-  cudaEvent_t start, stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
+  cudaEvent_t t0, t1; cudaEventCreate(&t0); cudaEventCreate(&t1);
+  const int iters = 100;
+  cudaEventRecord(t0);
+  for (int i = 0; i < iters; i++) gemm();
+  cudaEventRecord(t1); cudaEventSynchronize(t1);
 
-  const int num_iters = 100;
-  cudaEventRecord(start);
-  for (int i = 0; i < num_iters; i++) {
-    benchmark_cublas();
-  }
-  cudaEventRecord(stop);
-  cudaEventSynchronize(stop);
+  float ms; cudaEventElapsedTime(&ms, t0, t1);
+  float avg = ms / iters;
 
-  float ms;
-  cudaEventElapsedTime(&ms, start, stop);
-  float avg_ms = ms / num_iters;
-
-  // Validate
-  std::vector<float> gpu_c(N * N);
-  cudaMemcpy(gpu_c.data(), dC, N * N * sizeof(float), cudaMemcpyDeviceToHost);
-  bool valid = validate(gpu_c.data(), host_c.data(), N * N);
-
-  double flops = 2.0 * N * N * N;
-  double tflops = (flops / (avg_ms / 1000.0)) / 1e12;
+  std::vector<float> gpuC(N * N);
+  cudaMemcpy(gpuC.data(), dC, szf, cudaMemcpyDeviceToHost);
+  bool ok = validate(gpuC.data(), ref.data(), N * N);
 
   printf("cuBLAS HGEMM: %.3f ms, %.2f TFLOPS, valid: %s\n",
-         avg_ms, tflops, valid ? "YES" : "NO");
+    avg, (2.0 * N * N * N / 1e12) / (avg / 1000.0), ok ? "YES" : "NO");
 
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
-  cublasDestroy(handle);
-  cudaFree(dA);
-  cudaFree(dB);
-  cudaFree(dC);
-
-  return 0;
+  cudaEventDestroy(t0); cudaEventDestroy(t1);
+  cublasDestroy(h); cudaFree(dA); cudaFree(dB); cudaFree(dC);
 }
