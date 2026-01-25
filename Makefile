@@ -1,5 +1,5 @@
-# Auto-detect GPU architecture
-GPU_ARCH := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')
+# Auto-detect GPU architecture (guarded for WSL/no-nvidia-smi environments)
+GPU_ARCH := $(shell if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.'; fi)
 ifeq ($(GPU_ARCH),)
   $(warning Could not detect GPU, defaulting to sm_75 (Turing))
   GPU_ARCH := 75
@@ -14,6 +14,14 @@ CUTLASS_INC = -I./cutlass/include -I./cutlass/tools/util/include
 UTILS = utils.cu
 
 all: f32_naive.out f32_tiled.out f16_wmma.out f16_cublas.out f16_ptx.out
+
+# Convenience aliases (e.g., `make f16_ptx`)
+f32_naive: f32_naive.out
+f32_tiled: f32_tiled.out
+f16_wmma: f16_wmma.out
+f16_cutlass: f16_cutlass.out
+f16_cublas: f16_cublas.out
+f16_ptx: f16_ptx.out
 
 f32_naive.out: f32/naive.cu $(UTILS)
 	$(NVCC) $(NVCCFLAGS) f32/naive.cu $(UTILS) -o f32_naive.out
@@ -36,4 +44,4 @@ f16_ptx.out: f16/ptx_matmul.cu $(UTILS)
 clean:
 	rm -f *.out
 
-.PHONY: all clean
+.PHONY: all clean f32_naive f32_tiled f16_wmma f16_cutlass f16_cublas f16_ptx
